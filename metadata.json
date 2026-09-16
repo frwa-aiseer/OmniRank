@@ -1,0 +1,6 @@
+{
+  "name": "OmniRank",
+  "description": "AI Content Growth Operating System for learning brand brain, discovering content opportunities, research, structured content creation, SEO/GEO audits, and growth analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

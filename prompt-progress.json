@@ -1,0 +1,98 @@
+{
+  "project": "OmniRank",
+  "promptPackVersion": "1.0",
+  "currentCode": null,
+  "prompts": [
+    {
+      "code": "OR-P01",
+      "status": "completed",
+      "startedAt": "2026-09-16T22:29:14.265Z",
+      "completedAt": "2026-09-16T22:32:28.197Z",
+      "notes": "foundation, client/server env validation, supabase & R2 & Inngest abstractions, shell navigation, and tests passed"
+    },
+    {
+      "code": "OR-P02",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P03",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P04",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P05",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P06",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P07",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P08",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P09",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P10",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P11",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P12",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    },
+    {
+      "code": "OR-P13",
+      "status": "pending",
+      "startedAt": null,
+      "completedAt": null,
+      "notes": ""
+    }
+  ]
+}

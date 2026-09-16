@@ -1,0 +1,131 @@
+{
+  "name": "OmniRank AI Studio Implementation Prompt Pack",
+  "version": "1.0",
+  "executionMode": "sequential",
+  "stopOnFailure": true,
+  "rules": {
+    "inspectRepositoryBeforeEachTask": true,
+    "preserveWorkingCode": true,
+    "runTestsBeforeAndAfter": true,
+    "checkpointAfterEachTask": true,
+    "neverSkipFailedTask": true,
+    "neverStartBetaFeaturesAutomatically": true
+  },
+  "prompts": [
+    {
+      "code": "OR-P01",
+      "order": 1,
+      "title": "Foundation and Repository",
+      "dependsOn": [],
+      "prompt": "Prepare the OmniRank application foundation using TypeScript, React/Next.js, Tailwind CSS, shadcn/ui, Cloudflare-compatible deployment, Supabase, Cloudflare R2, Inngest, and strict environment validation. Inspect and preserve the existing repository before changing anything, create a clean modular structure, configure browser/server Supabase clients, base navigation, error boundaries, linting, type-checking and tests, and ensure no secrets are exposed to the client. Do not implement business features or hard-code any AI provider; finish only when the application runs locally and all available checks pass."
+    },
+    {
+      "code": "OR-P02",
+      "order": 2,
+      "title": "Authentication, Tenancy and RLS",
+      "dependsOn": [
+        "OR-P01"
+      ],
+      "prompt": "Implement OmniRank authentication and multi-tenant authorization with the hierarchy User → Organization → Brand → Website. Create profiles, organizations, organization_members, brands, brand_members and websites using UUIDs and Supabase migrations; support Owner/Admin/Member organization roles and Strategist/Writer/Reviewer/Viewer brand roles. Enable and test Row Level Security on every exposed table so UI filtering can never be the security boundary, keep service credentials server-only, and prove that anonymous, unassigned and cross-tenant users cannot read or mutate unauthorized data."
+    },
+    {
+      "code": "OR-P03",
+      "order": 3,
+      "title": "Brand Brain Core",
+      "dependsOn": [
+        "OR-P02"
+      ],
+      "prompt": "Implement the structured OmniRank Brand Brain with brand profiles, products/services, audiences, brand voice profiles and examples, preferred/avoided terminology, brand policies and competitors. Build the Brand Brain screens for Overview, Products & Services, Audiences, Brand Voice, Competitors and Policies, support create/read/update/archive operations, enforce brand-level permissions, and support policy severity levels of suggestion, warning and blocking. The Brand Brain must work manually without AI and important changes must be auditable."
+    },
+    {
+      "code": "OR-P04",
+      "order": 4,
+      "title": "Brand Brain Ingestion",
+      "dependsOn": [
+        "OR-P03"
+      ],
+      "prompt": "Implement the Brand Brain ingestion pipeline for websites, PDF, DOCX, TXT, Markdown, CSV, XLSX and manual notes. Store private files in Cloudflare R2 and metadata in PostgreSQL; create knowledge_sources, knowledge_documents, knowledge_chunks, evidence_claims, evidence_sources and evidence_claim_sources; enable pgvector and implement authorization, validation, parsing, normalization, hashing, deduplication, classification, structured extraction, semantic chunking, embeddings, trust classification and evidence-candidate creation. Treat imported instructions as untrusted data, never execute uploaded scripts/macros, abstract the embedding provider, avoid re-embedding unchanged content, and prove that cross-brand retrieval returns no unauthorized chunks."
+    },
+    {
+      "code": "OR-P05",
+      "order": 5,
+      "title": "Article Schema and Rich Content Editor",
+      "dependsOn": [
+        "OR-P04"
+      ],
+      "prompt": "Implement OmniRank's canonical versioned structured article schema and BlockNote-based rich editor. Create articles, article_working_documents, article_versions and content_block_operations; use structured JSON rather than HTML as the source of truth; assign stable IDs and provenance to blocks; support headings, paragraphs, bullet and numbered lists, standard and comparison tables, images, YouTube embeds, quotes, statistics, callouts, CTAs, FAQs, code and citations, with internal/external links as safe inline marks. Add autosave, immutable milestone versions, restore, schema validation and migration support, reject unsafe HTML/JavaScript, and provide the three-column editor shell with Outline/Blocks/Versions, the editor, and AI/SEO/GEO/Evidence/Brand/Links panels."
+    },
+    {
+      "code": "OR-P06",
+      "order": 6,
+      "title": "Opportunity Engine V1",
+      "dependsOn": [
+        "OR-P05"
+      ],
+      "prompt": "Implement OmniRank Opportunity Engine V1 without paid keyword APIs, using existing website content, Brand Brain data, uploaded keyword history and manually entered signals. Create content_projects, opportunities, opportunity_signals and opportunity_score_snapshots, support new-content, refresh, CTR, internal-link, content-gap, content-conflict, merge, cluster-expansion, citation-update, ranking and conversion opportunities, and preserve every component signal and scoring version rather than only the final score. Build the Opportunity list/detail experience so users can see what OmniRank recommends, why it recommends it, create content from it, dismiss it or mark it completed."
+    },
+    {
+      "code": "OR-P07",
+      "order": 7,
+      "title": "Research and Evidence Engine",
+      "dependsOn": [
+        "OR-P06"
+      ],
+      "prompt": "Implement OmniRank's evidence-backed Research Engine with research_projects, research_sources, research_findings, research_questions and content_briefs. Support Fast, Standard and Deep Research modes independent of model names; combine relevant Brand Brain knowledge, existing brand content, research sources, questions, competitors and evidence; classify sources as brand, primary, authoritative external, competitor, search result or weak; and build Research, Evidence and Content Brief interfaces. Preserve source traceability, flag unsupported claims, do not automatically approve externally extracted claims, and allow users to review the proposed title, angle, audience, intent, CTA, outline, tables, visuals, FAQs and sources before expensive generation."
+    },
+    {
+      "code": "OR-P08",
+      "order": 8,
+      "title": "OmniRouter and Content Generation",
+      "dependsOn": [
+        "OR-P07"
+      ],
+      "prompt": "Implement OmniRouter as OmniRank's provider-neutral AI abstraction and connect it to content generation. Create ai_tasks, ai_models, ai_routing_policies and ai_usage_events; applications must request task codes and quality/cost constraints rather than specific model names; support cheap/free routes, fallbacks, timeouts, structured outputs, latency and cost recording, and keep provider-specific code inside the routing layer. Implement task categories for brand extraction, classification, keyword clustering, research synthesis, content briefs, article drafting, block rewrites, fact checking and SEO/GEO/brand reviews, retrieve only relevant brand/audience/offering/policy/evidence/knowledge context, generate structured article blocks, and allow one-block regeneration without overwriting user-edited content."
+    },
+    {
+      "code": "OR-P09",
+      "order": 9,
+      "title": "Quality, Review and Versioning",
+      "dependsOn": [
+        "OR-P08"
+      ],
+      "prompt": "Implement OmniRank quality gates, reviews and immutable approval/version behavior. Create SEO, GEO, brand and evidence audits, internal_link_suggestions, content_reviews, review_comments and approval_requirements; support article states from idea through researching, brief, drafting, AI review, human review, approved, scheduled, published, monitoring, refresh recommended and archived. Blocking Brand Policies must prevent publishing, approval must bind to a specific article_version_id, any subsequent edit must create an unapproved version, and optional separation-of-duties rules must prevent unauthorized self-approval."
+    },
+    {
+      "code": "OR-P10",
+      "order": 10,
+      "title": "WordPress Publishing",
+      "dependsOn": [
+        "OR-P09"
+      ],
+      "prompt": "Integrate secure WordPress publishing into OmniRank using revocable programmatic credentials rather than users' primary administrator passwords wherever possible. Create integrations, protected credential references, cms_content_mappings and publishing_jobs; support connection testing, reading posts, creating/updating drafts, uploading media, scheduling, publishing and updating OmniRank-managed articles. Render sanitized WordPress-compatible HTML from the canonical structured document without making HTML the source of truth, keep credentials out of AI prompts and browser responses, implement idempotency so retries cannot create duplicate posts, and verify all supported rich blocks render correctly."
+    },
+    {
+      "code": "OR-P11",
+      "order": 11,
+      "title": "Growth Brain with GSC and GA4",
+      "dependsOn": [
+        "OR-P10"
+      ],
+      "prompt": "Implement OmniRank Growth Brain by connecting Google Search Console and Google Analytics 4 and synchronizing their data into local daily tables rather than querying Google on every dashboard load. Create gsc_query_daily, gsc_page_daily, gsc_page_query_daily, ga4_landing_page_daily, content_performance_snapshots, content_health_assessments and growth_recommendations; detect growing/declining content, high-impression low-CTR pages, ranking opportunities, stale content, conflicts and conversion winners; convert meaningful findings into explainable recommendations/opportunities; and build Growth Overview, Content Health, Search Queries and a basic Topic Map."
+    },
+    {
+      "code": "OR-P12",
+      "order": 12,
+      "title": "Automations, Billing and Cost Controls",
+      "dependsOn": [
+        "OR-P11"
+      ],
+      "prompt": "Implement OmniRank controlled automation, usage entitlements and internal cost accounting. Use Inngest for automations and create automations, automation_runs, workflow_runs and workflow_steps with Manual, Copilot and opt-in brand-scoped Autopilot modes; include Content Decay Watch, CTR Opportunity Watch, Internal Link Watch, Weekly Opportunity Report and Auto-Publish Approved Content, with rate limits, confidence thresholds and approval rules. Create plans, subscriptions and usage_events using customer-facing Article Runs rather than tokens, keep ai_usage_events as the separate internal cost ledger, build cost-per-article/customer/provider/feature views, and integrate Stripe only after local entitlement logic is tested and cannot be bypassed by client requests."
+    },
+    {
+      "code": "OR-P13",
+      "order": 13,
+      "title": "Security Hardening and Alpha Acceptance",
+      "dependsOn": [
+        "OR-P12"
+      ],
+      "prompt": "Harden the complete OmniRank Alpha without adding major new features. Run and fix security, tenant-isolation, role, approval/version, secret-exposure, prompt-injection, private-file, automation-limit, entitlement, workflow-retry and duplicate-publishing tests; verify cross-brand RAG isolation and append-only audit behavior; then execute the complete Alpha journey from signup, Brand Brain ingestion and opportunity creation through research, rich article generation, quality/review, exact-version approval, WordPress publishing, GSC/GA4 synchronization and the next Growth Brain recommendation. Measure workflow failures, retrieval relevance, generation latency, database performance and AI cost, and produce an Alpha Readiness Report listing passed/failed checks, remaining blockers and recommended next priorities; do not start Beta features automatically."
+    }
+  ]
+}
