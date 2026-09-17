@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { cn } from "../lib/utils.ts";
-import { clientEnv } from "../lib/env.ts";
+import { clientEnv, sanitizeSupabaseUrl } from "../lib/env.ts";
 import { supabase } from "../lib/supabase/client.ts";
 import { r2Storage } from "../server/storage/r2.ts";
 import { inngest } from "../server/inngest/client.ts";
+import { getServerEnv } from "../server/env.ts";
 
-describe("OR-P01 Foundation Tests", () => {
+describe("OR-P01 Foundation & Environment Tests", () => {
   it("should merge CSS class names safely using cn()", () => {
     const result = cn("bg-red-500", true && "text-white", false && "hidden", "p-4");
     expect(result).toBe("bg-red-500 text-white p-4");
@@ -14,12 +15,37 @@ describe("OR-P01 Foundation Tests", () => {
     expect(overrideResult).toBe("py-1 px-4");
   });
 
-  it("should validate client environment schema without leaking server keys", () => {
+  it("should sanitize Supabase URLs to the project root without /rest/v1/", () => {
+    expect(sanitizeSupabaseUrl("https://abc.supabase.co/rest/v1")).toBe("https://abc.supabase.co");
+    expect(sanitizeSupabaseUrl("https://abc.supabase.co/rest/v1/")).toBe("https://abc.supabase.co");
+    expect(sanitizeSupabaseUrl("https://abc.supabase.co/")).toBe("https://abc.supabase.co");
+    expect(sanitizeSupabaseUrl("https://abc.supabase.co")).toBe("https://abc.supabase.co");
+  });
+
+  it("should sanitize Supabase URL and validate publishable key on client without leaking secret keys", () => {
     expect(clientEnv).toBeDefined();
     expect(clientEnv.VITE_SUPABASE_URL).toBeDefined();
-    // Verify that server secrets are NOT part of the client schema
-    expect((clientEnv as unknown as Record<string, unknown>).SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
-    expect((clientEnv as unknown as Record<string, unknown>).R2_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(clientEnv.VITE_SUPABASE_URL.endsWith("/rest/v1")).toBe(false);
+    expect(clientEnv.VITE_SUPABASE_PUBLISHABLE_KEY).toBeDefined();
+
+    // Verify that server secret keys are NOT part of the client schema
+    const clientKeys = Object.keys(clientEnv);
+    expect(clientKeys).not.toContain("SUPABASE_SECRET_KEY");
+    expect(clientKeys).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
+    expect(clientKeys).not.toContain("R2_SECRET_ACCESS_KEY");
+    expect(clientKeys).not.toContain("OPENAI_API_KEY");
+    expect(clientKeys).not.toContain("ANTHROPIC_API_KEY");
+  });
+
+  it("should allow server environment to parse cleanly with all optional provider keys omitted", () => {
+    const serverEnv = getServerEnv();
+    expect(serverEnv).toBeDefined();
+    expect(typeof serverEnv.PORT).toBe("number");
+    expect(serverEnv.PORT).toBeGreaterThan(0);
+    // Optional provider credentials must not cause errors when omitted
+    expect(serverEnv.R2_ACCOUNT_ID).toBeUndefined();
+    expect(serverEnv.OPENAI_API_KEY).toBeUndefined();
+    expect(serverEnv.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it("should initialize browser Supabase client without runtime crash", () => {
@@ -28,8 +54,9 @@ describe("OR-P01 Foundation Tests", () => {
     expect(typeof supabase.from).toBe("function");
   });
 
-  it("should initialize R2 storage service safely", async () => {
+  it("should initialize R2 storage service safely in stub mode without credentials", async () => {
     expect(r2Storage).toBeDefined();
+    expect(r2Storage.isConfigured()).toBe(false);
     const upload = await r2Storage.uploadObject({
       key: "test/claim.txt",
       body: "Evidence Claim Test Data",
@@ -39,7 +66,7 @@ describe("OR-P01 Foundation Tests", () => {
     expect(upload.sizeBytes).toBeGreaterThan(0);
   });
 
-  it("should initialize Inngest workflow client safely", async () => {
+  it("should initialize Inngest workflow client safely in development mode", async () => {
     expect(inngest.id).toBe("omnirank");
     const dispatch = await inngest.send({
       name: "omnirank/test.event",
