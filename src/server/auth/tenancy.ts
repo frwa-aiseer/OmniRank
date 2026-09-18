@@ -1,4 +1,5 @@
 import { createServerAdminSupabaseClient } from "../supabase/admin.ts";
+import { getServerEnv } from "../env.ts";
 import {
   Profile,
   Organization,
@@ -9,6 +10,20 @@ import {
   OrgRole,
   BrandRole,
 } from "../../types/index.ts";
+import {
+  DEMO_USER_ALEX,
+  DEMO_USER_SARAH,
+  DEMO_USER_MARCUS,
+  DEMO_ORGANIZATION_ACME,
+  DEMO_ORGANIZATION_NEXUS,
+  DEMO_BRAND_ACME_CLOUD,
+  DEMO_BRAND_ACME_SECURITY,
+  DEMO_BRAND_NEXUS_AI,
+  DEMO_WEBSITE_ACME_CLOUD,
+  DEMO_WEBSITE_ACME_SECURITY,
+  DEMO_ORG_MEMBERS,
+  DEMO_BRAND_MEMBERS,
+} from "../../fixtures/demoData.ts";
 
 export interface SecurityContext {
   userId?: string;
@@ -24,8 +39,17 @@ export class TenancyAuthorizationError extends Error {
 }
 
 /**
- * In-memory Tenant Isolation Store for dev/testing/simulation
- * strictly implements Postgres RLS rules for OmniRank.
+ * Tenancy Repository (OR-G04A Hardened Architecture)
+ *
+ * Enforces PostgreSQL RLS rules for OmniRank:
+ * 1. Agency Isolation: Org Owner/Admin can view all brands in org;
+ *    normal members can ONLY view brands where they have explicit brand_members assignment.
+ * 2. Member Enumeration Guard: Normal members cannot enumerate unrelated org users.
+ *    They can only see themselves and peers sharing an assigned brand.
+ * 3. Role Authority Guard: Brand Strategists cannot manage brand membership in V1.
+ *    Only Org Owner/Admin can add, edit, or remove brand members.
+ *    Admins cannot remove or demote the Owner; ownership assignment is Owner-only.
+ * 4. Centralized Demo Fixtures: Acme/Nexus data lives in dedicated module, strictly gated by DEMO_MODE.
  */
 export class TenancyRepository {
   private profiles: Map<string, Profile> = new Map();
@@ -40,64 +64,44 @@ export class TenancyRepository {
   }
 
   private seedInitialData() {
-    // Seed default demo user and org for development preview
-    const demoUser: Profile = {
-      id: "00000000-0000-4000-8000-000000000001",
-      email: "demo@omnirank.ai",
-      fullName: "Alex Rivera",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    this.profiles.set(demoUser.id, demoUser);
+    const env = getServerEnv();
+    // Demo fixtures are strictly loaded ONLY in local development/test with DEMO_MODE enabled
+    if (env.NODE_ENV === "production" || !env.DEMO_MODE) {
+      return;
+    }
 
-    const demoOrg: Organization = {
-      id: "11111111-1111-4000-8000-111111111111",
-      name: "Acme Growth Media",
-      slug: "acme-growth-media",
-      createdBy: demoUser.id,
-      createdAt: new Date().toISOString(),
-    };
-    this.organizations.set(demoOrg.id, demoOrg);
+    // Seed from centralized demo fixture module
+    const demoUsers = [DEMO_USER_ALEX, DEMO_USER_SARAH, DEMO_USER_MARCUS];
+    for (const u of demoUsers) {
+      this.profiles.set(u.id, {
+        id: u.id,
+        email: u.email,
+        fullName: u.fullName,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
 
-    const demoOrgMember: OrganizationMember = {
-      id: "22222222-2222-4000-8000-222222222221",
-      organizationId: demoOrg.id,
-      userId: demoUser.id,
-      role: "owner",
-      createdAt: new Date().toISOString(),
-    };
-    this.orgMembers.set(demoOrgMember.id, demoOrgMember);
+    this.organizations.set(DEMO_ORGANIZATION_ACME.id, DEMO_ORGANIZATION_ACME);
+    this.organizations.set(DEMO_ORGANIZATION_NEXUS.id, DEMO_ORGANIZATION_NEXUS);
+    // Legacy test/demo aliases
+    this.organizations.set("org-001", { ...DEMO_ORGANIZATION_ACME, id: "org-001" });
+    this.brands.set("brand-001", { ...DEMO_BRAND_ACME_CLOUD, id: "brand-001", organizationId: "org-001" });
 
-    const demoBrand: Brand = {
-      id: "33333333-3333-4000-8000-333333333331",
-      organizationId: demoOrg.id,
-      name: "Acme Cloud",
-      slug: "acme-cloud",
-      primaryDomain: "acmecloud.io",
-      industry: "B2B SaaS / DevOps",
-      createdAt: new Date().toISOString(),
-    };
-    this.brands.set(demoBrand.id, demoBrand);
+    for (const om of DEMO_ORG_MEMBERS) {
+      this.orgMembers.set(om.id, om);
+    }
 
-    const demoBrandMember: BrandMember = {
-      id: "44444444-4444-4000-8000-444444444441",
-      brandId: demoBrand.id,
-      userId: demoUser.id,
-      role: "strategist",
-      createdAt: new Date().toISOString(),
-    };
-    this.brandMembers.set(demoBrandMember.id, demoBrandMember);
+    this.brands.set(DEMO_BRAND_ACME_CLOUD.id, DEMO_BRAND_ACME_CLOUD);
+    this.brands.set(DEMO_BRAND_ACME_SECURITY.id, DEMO_BRAND_ACME_SECURITY);
+    this.brands.set(DEMO_BRAND_NEXUS_AI.id, DEMO_BRAND_NEXUS_AI);
 
-    const demoWebsite: Website = {
-      id: "55555555-5555-4000-8000-555555555551",
-      organizationId: demoOrg.id,
-      brandId: demoBrand.id,
-      domain: "acmecloud.io",
-      sitemapUrl: "https://acmecloud.io/sitemap.xml",
-      status: "active",
-      createdAt: new Date().toISOString(),
-    };
-    this.websites.set(demoWebsite.id, demoWebsite);
+    for (const bm of DEMO_BRAND_MEMBERS) {
+      this.brandMembers.set(bm.id, bm);
+    }
+
+    this.websites.set(DEMO_WEBSITE_ACME_CLOUD.id, DEMO_WEBSITE_ACME_CLOUD);
+    this.websites.set(DEMO_WEBSITE_ACME_SECURITY.id, DEMO_WEBSITE_ACME_SECURITY);
   }
 
   // --- RLS Helper Methods ---
@@ -120,6 +124,10 @@ export class TenancyRepository {
   public isOrgAdmin(orgId: string, userId?: string): boolean {
     const role = this.getOrgRole(orgId, userId);
     return role === "owner" || role === "admin";
+  }
+
+  public isOrgOwner(orgId: string, userId?: string): boolean {
+    return this.getOrgRole(orgId, userId) === "owner";
   }
 
   public isBrandMember(brandId: string, userId?: string): boolean {
@@ -161,21 +169,42 @@ export class TenancyRepository {
     if (context.isServiceRole || context.userId === profileId) {
       return this.profiles.get(profileId) || null;
     }
-    // Check if co-member in any org
-    const userOrgs = Array.from(this.orgMembers.values())
-      .filter((m) => m.userId === context.userId)
+
+    // Org Owner/Admin can view profiles of users in their orgs
+    const callerAdminOrgIds = Array.from(this.orgMembers.values())
+      .filter((m) => m.userId === context.userId && (m.role === "owner" || m.role === "admin"))
       .map((m) => m.organizationId);
-    const targetOrgs = Array.from(this.orgMembers.values())
+
+    const targetOrgIds = Array.from(this.orgMembers.values())
       .filter((m) => m.userId === profileId)
       .map((m) => m.organizationId);
-    const sharesOrg = userOrgs.some((id) => targetOrgs.includes(id));
-    if (!sharesOrg) {
-      throw new TenancyAuthorizationError("Cannot view cross-tenant user profile", "UNAUTHORIZED");
+
+    const isAdminOfTarget = callerAdminOrgIds.some((id) => targetOrgIds.includes(id));
+    if (isAdminOfTarget) {
+      return this.profiles.get(profileId) || null;
     }
-    return this.profiles.get(profileId) || null;
+
+    // Peers sharing an assigned brand can view each other's profiles
+    const callerBrandIds = Array.from(this.brandMembers.values())
+      .filter((bm) => bm.userId === context.userId)
+      .map((bm) => bm.brandId);
+
+    const targetBrandIds = Array.from(this.brandMembers.values())
+      .filter((bm) => bm.userId === profileId)
+      .map((bm) => bm.brandId);
+
+    const sharesBrand = callerBrandIds.some((id) => targetBrandIds.includes(id));
+    if (sharesBrand) {
+      return this.profiles.get(profileId) || null;
+    }
+
+    throw new TenancyAuthorizationError("Cannot view unrelated user profile", "UNAUTHORIZED");
   }
 
-  public createProfile(context: SecurityContext, data: { id: string; email: string; fullName: string; avatarUrl?: string }): Profile {
+  public createProfile(
+    context: SecurityContext,
+    data: { id: string; email: string; fullName: string; avatarUrl?: string }
+  ): Profile {
     if (!context.isServiceRole && context.userId !== data.id) {
       throw new TenancyAuthorizationError("Cannot create profile for another user ID", "UNAUTHORIZED");
     }
@@ -202,7 +231,11 @@ export class TenancyRepository {
     return Array.from(this.organizations.values()).filter((o) => memberOrgIds.includes(o.id));
   }
 
-  public createOrganization(context: SecurityContext, name: string, slug: string): { org: Organization; member: OrganizationMember } {
+  public createOrganization(
+    context: SecurityContext,
+    name: string,
+    slug: string
+  ): { org: Organization; member: OrganizationMember } {
     if (!context.isAuthenticated || !context.userId) {
       throw new TenancyAuthorizationError("Anonymous users cannot create organizations", "UNAUTHENTICATED");
     }
@@ -251,18 +284,51 @@ export class TenancyRepository {
     if (!context.isServiceRole && !this.isOrgMember(orgId, context.userId)) {
       throw new TenancyAuthorizationError("User is not a member of this organization", "FORBIDDEN");
     }
-    return Array.from(this.orgMembers.values())
-      .filter((m) => m.organizationId === orgId)
+
+    const isOrgAdm = context.isServiceRole || this.isOrgAdmin(orgId, context.userId);
+    const allOrgMembers = Array.from(this.orgMembers.values()).filter((m) => m.organizationId === orgId);
+
+    if (isOrgAdm) {
+      return allOrgMembers.map((m) => ({
+        ...m,
+        profile: this.profiles.get(m.userId),
+      }));
+    }
+
+    // Requirement 4: Normal members cannot automatically enumerate all organization users.
+    // They only see themselves and peers who share an assigned brand.
+    const userBrandIds = Array.from(this.brandMembers.values())
+      .filter((bm) => bm.userId === context.userId)
+      .map((bm) => bm.brandId);
+
+    const sharedPeerUserIds = new Set<string>([context.userId]);
+    Array.from(this.brandMembers.values())
+      .filter((bm) => userBrandIds.includes(bm.brandId))
+      .forEach((bm) => sharedPeerUserIds.add(bm.userId));
+
+    return allOrgMembers
+      .filter((m) => sharedPeerUserIds.has(m.userId))
       .map((m) => ({
         ...m,
         profile: this.profiles.get(m.userId),
       }));
   }
 
-  public addOrganizationMember(context: SecurityContext, orgId: string, targetUserId: string, role: OrgRole): OrganizationMember {
+  public addOrganizationMember(
+    context: SecurityContext,
+    orgId: string,
+    targetUserId: string,
+    role: OrgRole
+  ): OrganizationMember {
     if (!context.isServiceRole && !this.isOrgAdmin(orgId, context.userId)) {
       throw new TenancyAuthorizationError("Only Org Owners and Admins can add members", "FORBIDDEN");
     }
+
+    // Requirement 5: Ownership changes must remain Owner-only
+    if (role === "owner" && !context.isServiceRole && !this.isOrgOwner(orgId, context.userId)) {
+      throw new TenancyAuthorizationError("Only an Organization Owner can grant the Owner role", "FORBIDDEN");
+    }
+
     const id = crypto.randomUUID();
     const member: OrganizationMember = {
       id,
@@ -275,7 +341,93 @@ export class TenancyRepository {
     return member;
   }
 
+  public updateOrganizationMember(
+    context: SecurityContext,
+    orgId: string,
+    memberId: string,
+    newRole: OrgRole
+  ): OrganizationMember {
+    if (!context.isAuthenticated || !context.userId) {
+      throw new TenancyAuthorizationError("Anonymous access denied", "UNAUTHENTICATED");
+    }
+    const member = this.orgMembers.get(memberId);
+    if (!member || member.organizationId !== orgId) {
+      throw new Error("Organization member not found");
+    }
+
+    const isOwner = context.isServiceRole || this.isOrgOwner(orgId, context.userId);
+    const isAdmin = context.isServiceRole || this.isOrgAdmin(orgId, context.userId);
+
+    if (!isAdmin) {
+      throw new TenancyAuthorizationError("Only Organization Owners or Admins can change roles", "FORBIDDEN");
+    }
+
+    // Requirement 5: Admin cannot demote or alter the Owner
+    if (member.role === "owner" && !isOwner) {
+      throw new TenancyAuthorizationError("Only an Organization Owner can modify the owner role", "FORBIDDEN");
+    }
+
+    // Requirement 5: Admin cannot promote anyone to Owner
+    if (newRole === "owner" && !isOwner) {
+      throw new TenancyAuthorizationError("Only an Organization Owner can transfer or grant Owner role", "FORBIDDEN");
+    }
+
+    member.role = newRole;
+    this.orgMembers.set(memberId, member);
+    return member;
+  }
+
+  public removeOrganizationMember(
+    context: SecurityContext,
+    orgId: string,
+    memberId: string
+  ): boolean {
+    if (!context.isAuthenticated || !context.userId) {
+      throw new TenancyAuthorizationError("Anonymous access denied", "UNAUTHENTICATED");
+    }
+    const member = this.orgMembers.get(memberId);
+    if (!member || member.organizationId !== orgId) {
+      throw new Error("Organization member not found");
+    }
+
+    const isOwner = context.isServiceRole || this.isOrgOwner(orgId, context.userId);
+    const isAdmin = context.isServiceRole || this.isOrgAdmin(orgId, context.userId);
+
+    if (!isAdmin) {
+      throw new TenancyAuthorizationError("Only Organization Owners or Admins can remove members", "FORBIDDEN");
+    }
+
+    // Requirement 5: Admin cannot remove the Owner
+    if (member.role === "owner") {
+      throw new TenancyAuthorizationError("Organization Owner cannot be removed by an Admin", "FORBIDDEN");
+    }
+
+    this.orgMembers.delete(memberId);
+    return true;
+  }
+
   // 4. Brands
+  public getBrandRaw(brandId: string): Brand | null {
+    return this.brands.get(brandId) || null;
+  }
+
+  public resolveBrandOrganization(brandId: string): string | null {
+    const brand = this.brands.get(brandId);
+    return brand ? brand.organizationId : null;
+  }
+
+  public getBrandById(context: SecurityContext, brandId: string): Brand | null {
+    if (!context.isAuthenticated || !context.userId) {
+      throw new TenancyAuthorizationError("Anonymous access denied", "UNAUTHENTICATED");
+    }
+    const brand = this.brands.get(brandId);
+    if (!brand) return null;
+    if (!context.isServiceRole && !this.isBrandMember(brandId, context.userId)) {
+      throw new TenancyAuthorizationError("Access denied to brand", "FORBIDDEN");
+    }
+    return brand;
+  }
+
   public getBrands(context: SecurityContext, orgId: string): Brand[] {
     if (!context.isAuthenticated || !context.userId) {
       throw new TenancyAuthorizationError("Anonymous access denied", "UNAUTHENTICATED");
@@ -283,10 +435,30 @@ export class TenancyRepository {
     if (!context.isServiceRole && !this.isOrgMember(orgId, context.userId)) {
       throw new TenancyAuthorizationError("Access denied to organization brands", "FORBIDDEN");
     }
-    return Array.from(this.brands.values()).filter((b) => b.organizationId === orgId);
+
+    const isOrgAdm = context.isServiceRole || this.isOrgAdmin(orgId, context.userId);
+    const orgBrands = Array.from(this.brands.values()).filter((b) => b.organizationId === orgId);
+
+    // Requirement 4: Owner/Admin can see all brands inside their organization.
+    if (isOrgAdm) {
+      return orgBrands;
+    }
+
+    // Requirement 4: A normal organization Member can see only brands where they have explicit brand_members access.
+    // Organization Members cannot automatically enumerate unrelated client brands.
+    return orgBrands.filter((b) =>
+      Array.from(this.brandMembers.values()).some((bm) => bm.brandId === b.id && bm.userId === context.userId)
+    );
   }
 
-  public createBrand(context: SecurityContext, orgId: string, name: string, slug: string, primaryDomain: string, industry?: string): Brand {
+  public createBrand(
+    context: SecurityContext,
+    orgId: string,
+    name: string,
+    slug: string,
+    primaryDomain: string,
+    industry?: string
+  ): Brand {
     if (!context.isServiceRole && !this.isOrgAdmin(orgId, context.userId)) {
       throw new TenancyAuthorizationError("Only Organization Owners or Admins can create brands", "FORBIDDEN");
     }
@@ -333,15 +505,21 @@ export class TenancyRepository {
       }));
   }
 
-  public addBrandMember(context: SecurityContext, brandId: string, targetUserId: string, role: BrandRole): BrandMember {
+  public addBrandMember(
+    context: SecurityContext,
+    brandId: string,
+    targetUserId: string,
+    role: BrandRole
+  ): BrandMember {
     const brand = this.brands.get(brandId);
     if (!brand) throw new Error("Brand not found");
 
-    const isOrgAdm = context.userId ? this.isOrgAdmin(brand.organizationId, context.userId) : false;
-    const isBrandStrategist = context.userId ? this.getBrandRole(brandId, context.userId) === "strategist" : false;
+    const isOrgAdm = context.isServiceRole || (context.userId ? this.isOrgAdmin(brand.organizationId, context.userId) : false);
 
-    if (!context.isServiceRole && !isOrgAdm && !isBrandStrategist) {
-      throw new TenancyAuthorizationError("Only Org Admins or Brand Strategists can manage brand members", "FORBIDDEN");
+    // Requirement 5: Brand Strategists must NOT manage brand membership/roles by default.
+    // Only Organization Owner/Admin may add, remove or change member roles in V1.
+    if (!isOrgAdm) {
+      throw new TenancyAuthorizationError("Only Organization Owners or Admins can manage brand members", "FORBIDDEN");
     }
 
     const id = crypto.randomUUID();
@@ -354,6 +532,55 @@ export class TenancyRepository {
     };
     this.brandMembers.set(id, member);
     return member;
+  }
+
+  public updateBrandMember(
+    context: SecurityContext,
+    brandId: string,
+    memberId: string,
+    newRole: BrandRole
+  ): BrandMember {
+    const brand = this.brands.get(brandId);
+    if (!brand) throw new Error("Brand not found");
+
+    const isOrgAdm = context.isServiceRole || (context.userId ? this.isOrgAdmin(brand.organizationId, context.userId) : false);
+
+    // Requirement 5: Only Organization Owner/Admin may change member roles
+    if (!isOrgAdm) {
+      throw new TenancyAuthorizationError("Only Organization Owners or Admins can update brand member roles", "FORBIDDEN");
+    }
+
+    const member = this.brandMembers.get(memberId);
+    if (!member || member.brandId !== brandId) {
+      throw new Error("Brand member not found");
+    }
+
+    member.role = newRole;
+    this.brandMembers.set(memberId, member);
+    return member;
+  }
+
+  public removeBrandMember(
+    context: SecurityContext,
+    brandId: string,
+    memberId: string
+  ): boolean {
+    const brand = this.brands.get(brandId);
+    if (!brand) throw new Error("Brand not found");
+
+    const isOrgAdm = context.isServiceRole || (context.userId ? this.isOrgAdmin(brand.organizationId, context.userId) : false);
+
+    if (!isOrgAdm) {
+      throw new TenancyAuthorizationError("Only Organization Owners or Admins can remove brand members", "FORBIDDEN");
+    }
+
+    const member = this.brandMembers.get(memberId);
+    if (!member || member.brandId !== brandId) {
+      throw new Error("Brand member not found");
+    }
+
+    this.brandMembers.delete(memberId);
+    return true;
   }
 
   // 6. Websites

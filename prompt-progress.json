@@ -32,6 +32,20 @@
       "notes": "Implemented multi-format ingestion pipeline (PDF, DOCX, Markdown, HTML, CSV/XLSX, notes), defense-in-depth heuristic sanitizer & macro neutralizer (with untrusted data architectural isolation), hierarchical semantic chunker, gemini-embedding-2 (768d), deduplication hashing, evidence extraction engine, Sources and Evidence UI tabs, and test suite. R2 adapter implemented; live R2 verification pending credentials."
     },
     {
+      "code": "OR-G04A",
+      "status": "completed",
+      "startedAt": "2026-09-17T15:00:00.000Z",
+      "completedAt": "2026-09-17T16:15:00.000Z",
+      "notes": "Real Supabase Auth, Tenancy & Security Gate: implemented shared authentication middleware, server tenancy validation, role hierarchy enforcement (Owner/Admin/Member, Strategist/Writer/Reviewer/Viewer), isolated demo fixtures module (DEMO_MODE), and comprehensive security gate tests."
+    },
+    {
+      "code": "OR-G04B",
+      "status": "completed",
+      "startedAt": "2026-09-18T00:30:00.000Z",
+      "completedAt": "2026-09-18T01:34:00.000Z",
+      "notes": "Real Brand Brain ingestion, storage & evidence gate: removed in-memory persistence for live DB mode, removed hardcoded org-001 tenancy, implemented binary file uploads (multer + pdf-parse/mammoth/xlsx/csv-parse), full SSRF-protected crawler, content hash deduplication with revision incrementing, private scoped R2 storage paths, unverified evidence candidate gate with verification workflow, updated trust taxonomy, and cross-brand pgvector retrieval."
+    },
+    {
       "code": "OR-P05",
       "status": "pending",
       "startedAt": null,

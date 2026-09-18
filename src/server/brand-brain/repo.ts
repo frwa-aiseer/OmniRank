@@ -13,6 +13,8 @@ import {
   OrgRole
 } from "../../types";
 import { brandBrainIngestion } from "./ingestion-service.ts";
+import { getServerEnv } from "../env.ts";
+import { getDemoBrandBrain } from "../../fixtures/demoData.ts";
 
 export interface BrandBrainStore {
   profiles: Map<string, BrandProfileDetails>;
@@ -40,7 +42,42 @@ export class BrandBrainRepository {
   };
 
   constructor() {
-    this.seedDefaultBrandBrain("brand-001");
+    const env = getServerEnv();
+    if (env.NODE_ENV === "test" || (env.NODE_ENV !== "production" && env.DEMO_MODE)) {
+      this.seedFromDemoFixtures("brand-001");
+      this.seedFromDemoFixtures("33333333-3333-4000-8000-333333333331");
+    }
+  }
+
+  private seedFromDemoFixtures(brandId: string) {
+    const demo = getDemoBrandBrain(brandId);
+    this.store.profiles.set(brandId, demo.profile);
+    demo.products.forEach((p) => {
+      const item = { ...p, id: `${brandId}:${p.id}` };
+      this.store.products.set(item.id, item);
+    });
+    demo.audiences.forEach((a) => {
+      const item = { ...a, id: `${brandId}:${a.id}` };
+      this.store.audiences.set(item.id, item);
+    });
+    this.store.voiceProfiles.set(brandId, demo.voiceProfile);
+    demo.voiceExamples.forEach((ve) => {
+      const item = { ...ve, id: `${brandId}:${ve.id}` };
+      this.store.voiceExamples.set(item.id, item);
+    });
+    demo.terminology.forEach((t) => {
+      const item = { ...t, id: `${brandId}:${t.id}` };
+      this.store.terminology.set(item.id, item);
+    });
+    demo.policies.forEach((pol) => {
+      const item = { ...pol, id: `${brandId}:${pol.id}` };
+      this.store.policies.set(item.id, item);
+    });
+    demo.competitors.forEach((c) => {
+      const item = { ...c, id: `${brandId}:${c.id}` };
+      this.store.competitors.set(item.id, item);
+    });
+    demo.auditLogs.forEach((al) => this.store.auditLogs.unshift(al));
   }
 
   private seedDefaultBrandBrain(brandId: string) {
@@ -815,6 +852,33 @@ export class BrandBrainRepository {
       summary: `${newStatus === "archived" ? "Archived" : "Restored"} term "${current.term}".`
     });
     return current;
+  }
+
+  public updateTerminology(
+    brandId: string,
+    termId: string,
+    updates: Partial<Omit<BrandTerminology, "id" | "brandId" | "createdAt">>,
+    user: { id: string; name: string }
+  ): BrandTerminology {
+    const current = this.store.terminology.get(termId);
+    if (!current || current.brandId !== brandId) {
+      throw new Error("Terminology item not found");
+    }
+    const updated: BrandTerminology = {
+      ...current,
+      ...updates,
+    };
+    this.store.terminology.set(termId, updated);
+    this.logAudit({
+      brandId,
+      userId: user.id,
+      userName: user.name,
+      entityType: "terminology",
+      entityId: termId,
+      action: "update",
+      summary: `Updated terminology "${updated.term}".`
+    });
+    return updated;
   }
 
   // Mutations: Policies (suggestion, warning, blocking)

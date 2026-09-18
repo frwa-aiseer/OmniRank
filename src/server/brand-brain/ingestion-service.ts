@@ -1,79 +1,134 @@
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import {
   KnowledgeSource,
   KnowledgeDocument,
   KnowledgeChunk,
   EvidenceSource,
   EvidenceClaim,
-  EvidenceClaimSourceLink,
   IngestionInput,
   IngestionResult,
   SemanticSearchResult,
   TrustLevel,
   DocumentClassification,
-  EvidenceVerificationStatus
+  EvidenceVerificationStatus,
+  SourceType,
+  DocumentFileType
 } from "../../types/index.ts";
 import { r2Storage } from "../storage/r2.ts";
 import { ContentSanitizer } from "./sanitizer.ts";
 import { DocumentParsers } from "./parsers.ts";
 import { SemanticChunker } from "./chunker.ts";
 import { EvidenceExtractor } from "./evidence-extractor.ts";
+import { safeFetchWebsite } from "./ssrf.ts";
 import {
   EmbeddingProvider,
   DeterministicEmbeddingProvider,
-  defaultEmbeddingProvider,
-  cosineSimilarity
+  defaultEmbeddingProvider
 } from "./embeddings.ts";
+import {
+  IBrandBrainRepository,
+  createBrandBrainRepository,
+  InMemoryBrandBrainRepository
+} from "./repository.ts";
+import { tenancyRepo, TenancyAuthorizationError } from "../auth/tenancy.ts";
 
 export class BrandBrainIngestionService {
-  private sources: Map<string, KnowledgeSource> = new Map();
-  private documents: Map<string, KnowledgeDocument> = new Map();
-  private chunks: Map<string, KnowledgeChunk> = new Map();
-  private evidenceSources: Map<string, EvidenceSource> = new Map();
-  private evidenceClaims: Map<string, EvidenceClaim> = new Map();
-
+  private repo: IBrandBrainRepository;
   private chunker = new SemanticChunker(400, 50);
   private embeddingProvider: EmbeddingProvider;
 
-  constructor(embeddingProvider: EmbeddingProvider = defaultEmbeddingProvider) {
+  // Local caching layer for synchronous accessors while keeping repository as primary persistent store
+  private localSources: Map<string, KnowledgeSource> = new Map();
+  private localDocuments: Map<string, KnowledgeDocument> = new Map();
+  private localChunks: Map<string, KnowledgeChunk> = new Map();
+  private localEvidenceSources: Map<string, EvidenceSource> = new Map();
+  private localEvidenceClaims: Map<string, EvidenceClaim> = new Map();
+
+  constructor(
+    embeddingProvider: EmbeddingProvider = defaultEmbeddingProvider,
+    repository?: IBrandBrainRepository
+  ) {
     this.embeddingProvider = embeddingProvider;
+    this.repo = repository || createBrandBrainRepository();
     this.seedDefaultKnowledge();
   }
 
   /**
-   * Main Ingestion Pipeline:
-   * 1. Hashing & Content Validation
-   * 2. Deduplication check (avoids re-embedding unchanged content)
-   * 3. Sanitization & Untrusted Directives Detection
-   * 4. Multi-format Structured Parsing
-   * 5. Document Classification & Metadata
-   * 6. Storage in R2
-   * 7. Semantic Chunking (with heading path hierarchy)
-   * 8. Vector Embeddings Generation (768-dim)
-   * 9. Evidence Claims & Provenance Extraction
+   * Resolves and validates the organization ID for a given brand.
+   * Throws TenancyAuthorizationError on cross-tenant mismatch.
    */
-  async ingestContent(input: IngestionInput, user?: { id: string; name: string }): Promise<IngestionResult> {
-    const brandId = input.brandId;
-    const rawText =
-      typeof input.fileBufferOrText === "string"
-        ? input.fileBufferOrText
-        : new TextDecoder().decode(input.fileBufferOrText);
-
-    // 1. Content Hashing & Deduplication
-    const contentHash = ContentSanitizer.computeContentHash(input.fileBufferOrText);
-
-    // Check if an identical document is already ingested for this brand
-    const existingDoc = Array.from(this.documents.values()).find(
-      (doc) => doc.brandId === brandId && doc.contentHash === contentHash
-    );
-
-    if (existingDoc) {
-      const existingSource = this.sources.get(existingDoc.sourceId)!;
-      const existingChunks = Array.from(this.chunks.values()).filter(
-        (c) => c.documentId === existingDoc.id && c.brandId === brandId
+  private resolveTenantOrganization(brandId: string, requestedOrgId?: string): string {
+    const actualOrgId = tenancyRepo.resolveBrandOrganization(brandId);
+    if (requestedOrgId && actualOrgId && requestedOrgId !== actualOrgId) {
+      throw new TenancyAuthorizationError(
+        `Cross-tenant violation: Brand ${brandId} belongs to organization ${actualOrgId}, not ${requestedOrgId}`,
+        "FORBIDDEN"
       );
-      const existingClaims = Array.from(this.evidenceClaims.values()).filter(
-        (ec) => ec.brandId === brandId && ec.sources.some((s) => s.documentId === existingDoc.id)
+    }
+    return actualOrgId || requestedOrgId || "org-001";
+  }
+
+  /**
+   * Main Ingestion Pipeline:
+   * 1. Dynamic Tenancy Resolution & Validation
+   * 2. Content Hashing (SHA-256) & Brand-Scoped Deduplication
+   * 3. SSRF-Safe URL Ingestion or Multi-Format Binary Parsing (PDF, DOCX, XLSX, CSV, MD, HTML, TXT)
+   * 4. Content Sanitization (Prompt injection defense & command neutralization)
+   * 5. Document Revision Management (if source changed)
+   * 6. Storage in Cloudflare R2 / LocalDevStorage with dynamic tenant path
+   * 7. Trust Level Taxonomy Resolution
+   * 8. Semantic Chunking & Vector Embeddings Generation (768-dim)
+   * 9. Evidence Candidate Extraction (all claims start unverified)
+   * 10. PostgreSQL / Supabase & pgvector Persistence
+   */
+  async ingestContent(
+    input: IngestionInput,
+    user?: { id: string; name: string }
+  ): Promise<IngestionResult> {
+    const brandId = input.brandId;
+    const organizationId = this.resolveTenantOrganization(brandId, input.organizationId);
+
+    // 1. Resolve source text and binary buffer
+    let rawBuffer: Buffer;
+    let rawText: string;
+    let fileType: DocumentFileType = input.fileType || (input.sourceType === "website" ? "html" : "note");
+
+    // Handle live website ingestion with SSRF protection
+    if (input.sourceType === "website" && input.sourceUrl && (!input.fileBufferOrText || input.fileBufferOrText.length === 0)) {
+      const webResult = await safeFetchWebsite(input.sourceUrl);
+      rawText = webResult.cleanText;
+      rawBuffer = Buffer.from(webResult.bodyText, "utf-8");
+      fileType = "html";
+    } else {
+      rawBuffer = Buffer.isBuffer(input.fileBufferOrText)
+        ? input.fileBufferOrText
+        : typeof input.fileBufferOrText === "string"
+        ? Buffer.from(input.fileBufferOrText, "utf-8")
+        : Buffer.from(input.fileBufferOrText);
+      rawText = rawBuffer.toString("utf-8");
+    }
+
+    // 2. Content Hashing & Brand-Scoped Deduplication
+    const contentHash = createHash("sha256").update(rawBuffer).digest("hex");
+
+    const existingDoc = await this.repo.findDocumentByHash(brandId, contentHash);
+    if (existingDoc) {
+      const existingSource = (await this.repo.getSource(existingDoc.sourceId, brandId)) || {
+        id: existingDoc.sourceId,
+        brandId,
+        organizationId,
+        name: input.sourceName,
+        type: input.sourceType,
+        sourceUrl: input.sourceUrl,
+        trustLevel: existingDoc.trustLevel,
+        status: "active",
+        createdAt: existingDoc.createdAt,
+        updatedAt: existingDoc.updatedAt
+      };
+      const existingChunks = await this.repo.listChunks(brandId, existingDoc.id);
+      const allClaims = await this.repo.listEvidenceClaims(brandId);
+      const existingClaims = allClaims.filter((c) =>
+        c.sources.some((s) => s.documentId === existingDoc.id)
       );
 
       return {
@@ -86,77 +141,88 @@ export class BrandBrainIngestionService {
       };
     }
 
-    // 2. Sanitization (Defense against prompt injections & untrusted commands)
-    const sanitization = ContentSanitizer.sanitize(rawText);
+    // 3. Multi-Format Structured Parsing (PDF, DOCX, XLSX, CSV, MD, HTML, TXT)
+    const parsed = await DocumentParsers.parseAsync(rawBuffer, fileType, input.fileName || input.sourceName);
 
-    // 3. Format Parsing
-    const fileType = input.fileType || (input.sourceType === "website" ? "html" : "note");
-    const parsed = DocumentParsers.parse(sanitization.cleanText, fileType, input.fileName || input.sourceName);
+    // 4. Sanitization & Untrusted Directives Defense
+    const sanitization = ContentSanitizer.sanitize(parsed.extractedText);
 
-    // 4. Source Registration
-    let sourceId = "";
-    const existingMatchingSource = Array.from(this.sources.values()).find(
-      (s) => s.brandId === brandId && s.name === input.sourceName && s.type === input.sourceType
-    );
+    // 5. Trust Level Taxonomy Inference
+    const brandRecord = tenancyRepo.getBrandRaw(brandId);
+    const trustLevel =
+      input.trustLevel ||
+      this.inferTrustLevel(
+        input.sourceType,
+        input.sourceUrl,
+        brandRecord?.primaryDomain
+      );
 
-    if (existingMatchingSource) {
-      sourceId = existingMatchingSource.id;
-    } else {
-      sourceId = `src-${randomUUID().slice(0, 8)}`;
-      const newSource: KnowledgeSource = {
+    // 6. Source Registration / Lookup
+    let source = await this.repo.findMatchingSource(brandId, input.sourceName, input.sourceType);
+    if (!source) {
+      const sourceId = `src-${randomUUID().slice(0, 8)}`;
+      source = {
         id: sourceId,
         brandId,
-        organizationId: "org-001",
+        organizationId,
         name: input.sourceName,
         type: input.sourceType,
         sourceUrl: input.sourceUrl,
-        trustLevel: input.trustLevel || this.inferTrustLevel(input.sourceType, input.sourceUrl),
+        trustLevel,
         status: "active",
         config: input.metadata,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
-      this.sources.set(sourceId, newSource);
+      source = await this.repo.saveSource(source);
+      this.localSources.set(source.id, source);
     }
 
-    const source = this.sources.get(sourceId)!;
+    // 7. Check for source revision update (same source, updated content)
+    const prevDoc = await this.repo.findLatestDocumentBySource(brandId, source.id);
+    const revision = prevDoc ? (prevDoc.revision || 1) + 1 : 1;
 
-    // 5. R2 Storage Upload
-    const storageKey = `org-001/${brandId}/docs/${contentHash.slice(0, 16)}.${fileType}`;
+    // 8. R2 Object Storage with Strict Tenant Path
+    const storageKey = `tenants/${organizationId}/brands/${brandId}/docs/${contentHash.slice(0, 16)}.${fileType}`;
     await r2Storage.uploadObject({
       key: storageKey,
-      body: input.fileBufferOrText,
+      body: rawBuffer,
       contentType: this.getMimeType(fileType),
       metadata: {
+        organizationId,
         brandId,
         sourceName: input.sourceName,
-        contentHash
+        contentHash,
+        revision: String(revision)
       }
     });
 
-    // 6. Classification
-    const classification = input.classification || this.autoClassifyDocument(parsed.title, parsed.extractedText);
+    // 9. Classification
+    const classification =
+      input.classification || this.autoClassifyDocument(parsed.title, sanitization.cleanText);
 
-    // 7. Register Knowledge Document
+    // 10. Knowledge Document Registration
     const documentId = `doc-${randomUUID().slice(0, 8)}`;
     const newDoc: KnowledgeDocument = {
       id: documentId,
       brandId,
-      sourceId,
+      organizationId,
+      sourceId: source.id,
       title: parsed.title,
       url: input.sourceUrl,
       fileType,
       storageKey,
-      fileSizeBytes: typeof input.fileBufferOrText === "string" ? Buffer.byteLength(input.fileBufferOrText) : input.fileBufferOrText.byteLength,
+      fileSizeBytes: rawBuffer.byteLength,
       contentHash,
-      extractedText: parsed.extractedText,
+      revision,
+      extractedText: sanitization.cleanText,
       documentMetadata: {
         ...parsed.documentMetadata,
         ...input.metadata,
         sanitizationNotes: sanitization.sanitizationNotes
       },
       parsingStatus: "parsed",
-      trustLevel: source.trustLevel,
+      trustLevel,
       classification,
       chunkCount: 0,
       hasUntrustedDirectives: sanitization.hasUntrustedDirectives,
@@ -165,66 +231,97 @@ export class BrandBrainIngestionService {
       updatedAt: new Date().toISOString()
     };
 
-    // 8. Semantic Chunking
-    const rawChunks = this.chunker.chunkDocument(parsed.extractedText, {
+    // 11. Semantic Chunking with Hierarchy
+    const rawChunks = this.chunker.chunkDocument(sanitization.cleanText, {
       documentId,
-      sourceId,
+      sourceId: source.id,
       title: parsed.title,
-      trustLevel: source.trustLevel
+      trustLevel
     });
-
     newDoc.chunkCount = rawChunks.length;
-    this.documents.set(documentId, newDoc);
 
-    // 9. Embeddings Generation (Batch or Sequential)
-    const chunkTexts = rawChunks.map((rc) => `${rc.headingHierarchy.join(" > ")}\n${rc.content}`);
-    const embeddings = await this.embeddingProvider.generateBatchEmbeddings(chunkTexts);
+    // Save Document in repository
+    const savedDoc = await this.repo.saveDocument(newDoc);
+    this.localDocuments.set(savedDoc.id, savedDoc);
+
+    // 12. Vector Embeddings Generation (768-dim)
+    // Check if any chunks can reuse embeddings from previous revisions with identical contentHash
+    const prevChunks = prevDoc ? await this.repo.listChunks(brandId, prevDoc.id) : [];
+    const prevChunkMap = new Map(prevChunks.map((c) => [c.contentHash, c.embedding]));
+
+    const chunkTextsToEmbed: string[] = [];
+    const chunkTextIndicesToEmbed: number[] = [];
 
     const generatedChunks: KnowledgeChunk[] = [];
     for (let i = 0; i < rawChunks.length; i++) {
       const rc = rawChunks[i];
       const chunkId = `chk-${randomUUID().slice(0, 8)}`;
+
+      const cachedEmbedding = prevChunkMap.get(rc.contentHash);
       const chunk: KnowledgeChunk = {
         id: chunkId,
         brandId,
+        organizationId,
         documentId,
-        sourceId,
+        sourceId: source.id,
         chunkIndex: rc.chunkIndex,
         content: rc.content,
         contentHash: rc.contentHash,
         tokenCount: rc.tokenCount,
         headingHierarchy: rc.headingHierarchy,
         chunkType: rc.chunkType,
-        embedding: embeddings[i],
+        embedding: cachedEmbedding || [],
         metadata: rc.metadata,
-        trustLevel: source.trustLevel,
+        trustLevel,
         createdAt: new Date().toISOString()
       };
-      this.chunks.set(chunkId, chunk);
       generatedChunks.push(chunk);
+
+      if (!cachedEmbedding || cachedEmbedding.length === 0) {
+        chunkTextsToEmbed.push(`${rc.headingHierarchy.join(" > ")}\n${rc.content}`);
+        chunkTextIndicesToEmbed.push(i);
+      }
     }
 
-    // 10. Evidence Candidates Extraction & Source Registration
+    if (chunkTextsToEmbed.length > 0) {
+      const newEmbeddings = await this.embeddingProvider.generateBatchEmbeddings(chunkTextsToEmbed);
+      for (let j = 0; j < chunkTextsToEmbed.length; j++) {
+        const chunkIndex = chunkTextIndicesToEmbed[j];
+        generatedChunks[chunkIndex].embedding = newEmbeddings[j];
+      }
+    }
+
+    // Save Chunks in repository
+    await this.repo.saveChunks(generatedChunks);
+    for (const chk of generatedChunks) {
+      this.localChunks.set(chk.id, chk);
+    }
+
+    // 13. Evidence Candidates Extraction
+    // Requirement 7: EVERY automatically extracted claim starts as "unverified".
+    // 1P source may increase confidence/trust score, but does NOT make it verified.
     const generatedClaims: EvidenceClaim[] = [];
-    let evidenceSourceId = `evs-${randomUUID().slice(0, 8)}`;
+    const evidenceSourceId = `evs-${randomUUID().slice(0, 8)}`;
     const evSource: EvidenceSource = {
       id: evidenceSourceId,
       brandId,
+      organizationId,
       name: source.name,
       url: source.sourceUrl,
       publisher: source.name,
-      trustScore: source.trustLevel === "verified_1p" ? 95 : source.trustLevel === "partner_2p" ? 85 : 70,
-      isPrimarySource: source.trustLevel === "verified_1p",
+      trustScore: trustLevel === "brand_authoritative" || trustLevel === "verified_1p" ? 95 : 75,
+      isPrimarySource: trustLevel === "brand_authoritative" || trustLevel === "verified_1p",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    this.evidenceSources.set(evidenceSourceId, evSource);
+    await this.repo.saveEvidenceSource(evSource);
+    this.localEvidenceSources.set(evSource.id, evSource);
 
     for (const rc of rawChunks) {
       const candidates = EvidenceExtractor.extractCandidatesFromChunk(
         rc,
         documentId,
-        sourceId,
+        source.id,
         source.name,
         source.sourceUrl
       );
@@ -234,9 +331,11 @@ export class BrandBrainIngestionService {
         const claim: EvidenceClaim = {
           id: claimId,
           brandId,
+          organizationId,
           claimText: cand.claimText,
           claimType: cand.claimType,
-          verificationStatus: source.trustLevel === "verified_1p" ? "verified" : "unverified",
+          // CRITICAL: Always unverified until explicit human or policy approval
+          verificationStatus: "unverified",
           confidenceScore: cand.confidenceScore,
           extractedEntities: cand.extractedEntities,
           sources: [
@@ -255,14 +354,20 @@ export class BrandBrainIngestionService {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
-        this.evidenceClaims.set(claimId, claim);
         generatedClaims.push(claim);
+      }
+    }
+
+    if (generatedClaims.length > 0) {
+      await this.repo.saveEvidenceClaims(generatedClaims);
+      for (const c of generatedClaims) {
+        this.localEvidenceClaims.set(c.id, c);
       }
     }
 
     return {
       source,
-      document: newDoc,
+      document: savedDoc,
       chunks: generatedChunks,
       evidenceClaims: generatedClaims,
       isDuplicate: false,
@@ -271,107 +376,186 @@ export class BrandBrainIngestionService {
   }
 
   /**
-   * Semantic Vector Search over Brand Knowledge:
-   * STRICT GUARANTEE: Never returns chunks from other brands (brandId filter is enforced first).
+   * Semantic Vector Search for Brand Knowledge with strict tenant/brand boundary.
    */
   async searchBrandKnowledge(
     brandId: string,
     query: string,
-    topK = 5,
-    minSimilarity = 0.15
+    limit: number = 5,
+    threshold: number = 0.3,
+    organizationId?: string
   ): Promise<SemanticSearchResult[]> {
-    const queryVector = await this.embeddingProvider.generateEmbedding(query);
+    if (!query || !query.trim()) return [];
 
-    // Filter strictly by brandId BEFORE similarity computation
-    const brandChunks = Array.from(this.chunks.values()).filter((c) => c.brandId === brandId);
+    const queryEmbeddings = await this.embeddingProvider.generateBatchEmbeddings([query]);
+    const queryEmbedding = queryEmbeddings[0];
+    if (!queryEmbedding) return [];
 
-    const scored: SemanticSearchResult[] = [];
+    const similar = await this.repo.querySimilarChunks(
+      brandId,
+      queryEmbedding,
+      threshold,
+      limit,
+      organizationId
+    );
 
-    for (const chunk of brandChunks) {
-      const score = cosineSimilarity(queryVector, chunk.embedding);
-      if (score >= minSimilarity) {
-        const doc = this.documents.get(chunk.documentId);
-        const src = this.sources.get(chunk.sourceId);
-
-        scored.push({
-          chunk,
-          documentTitle: doc?.title || "Untitled Document",
-          documentUrl: doc?.url,
-          sourceName: src?.name || "Brand Brain Source",
-          similarityScore: Number(score.toFixed(4)),
-          trustLevel: chunk.trustLevel
-        });
-      }
-    }
-
-    // Sort descending by similarity score
-    scored.sort((a, b) => b.similarityScore - a.similarityScore);
-    return scored.slice(0, topK);
+    return similar.map((item) => ({
+      chunk: item.chunk,
+      similarityScore: item.similarity,
+      matchedQuery: query,
+      documentTitle: String(item.chunk.metadata?.title || "Knowledge Document"),
+      sourceName: String(item.chunk.metadata?.sourceName || "Knowledge Source"),
+      trustLevel: item.chunk.trustLevel
+    }));
   }
 
-  // --- Read Methods ---
-
-  getSources(brandId: string): KnowledgeSource[] {
-    return Array.from(this.sources.values()).filter((s) => s.brandId === brandId);
+  /**
+   * Correct Evidence Verification Workflow with Provenance (Requirement 7).
+   */
+  async verifyClaimAsync(
+    brandId: string,
+    claimId: string,
+    status: EvidenceVerificationStatus,
+    verifiedBy?: string
+  ): Promise<EvidenceClaim> {
+    const updated = await this.repo.updateClaimVerification(claimId, brandId, status, verifiedBy);
+    this.localEvidenceClaims.set(updated.id, updated);
+    return updated;
   }
 
-  getDocuments(brandId: string): KnowledgeDocument[] {
-    return Array.from(this.documents.values()).filter((d) => d.brandId === brandId);
-  }
-
-  getChunks(brandId: string, documentId?: string): KnowledgeChunk[] {
-    return Array.from(this.chunks.values()).filter((c) => {
-      if (c.brandId !== brandId) return false;
-      if (documentId && c.documentId !== documentId) return false;
-      return true;
-    });
-  }
-
-  getEvidenceClaims(brandId: string): EvidenceClaim[] {
-    return Array.from(this.evidenceClaims.values()).filter((c) => c.brandId === brandId);
-  }
-
-  getEvidenceSources(brandId: string): EvidenceSource[] {
-    return Array.from(this.evidenceSources.values()).filter((s) => s.brandId === brandId);
-  }
-
-  // --- Mutation & Evidence Verification Methods ---
-
-  verifyClaim(brandId: string, claimId: string, status: EvidenceVerificationStatus): EvidenceClaim {
-    const claim = this.evidenceClaims.get(claimId);
+  verifyClaim(
+    brandId: string,
+    claimId: string,
+    status: EvidenceVerificationStatus,
+    verifiedBy?: string
+  ): EvidenceClaim {
+    const claim = this.localEvidenceClaims.get(claimId);
     if (!claim || claim.brandId !== brandId) {
       throw new Error(`Claim ${claimId} not found for brand ${brandId}`);
     }
     claim.verificationStatus = status;
+    if (status === "verified") {
+      claim.verifiedBy = verifiedBy || "reviewer-system";
+      claim.verifiedAt = new Date().toISOString();
+    }
     claim.updatedAt = new Date().toISOString();
+    // Persist asynchronously in background
+    this.repo.updateClaimVerification(claimId, brandId, status, verifiedBy).catch(() => {});
     return claim;
   }
 
-  deleteDocument(brandId: string, documentId: string): boolean {
-    const doc = this.documents.get(documentId);
-    if (!doc || doc.brandId !== brandId) return false;
-
-    // Remove associated chunks
-    for (const [chkId, chk] of this.chunks.entries()) {
+  async deleteDocument(brandId: string, documentId: string): Promise<boolean> {
+    const ok = await this.repo.deleteDocument(documentId, brandId);
+    this.localDocuments.delete(documentId);
+    for (const [id, chk] of this.localChunks.entries()) {
       if (chk.documentId === documentId && chk.brandId === brandId) {
-        this.chunks.delete(chkId);
+        this.localChunks.delete(id);
+      }
+    }
+    return ok;
+  }
+
+  // --- Read-Only Query Accessors ---
+
+  getSources(brandId: string): KnowledgeSource[] {
+    return Array.from(this.localSources.values()).filter((s) => s.brandId === brandId);
+  }
+
+  async getSourcesAsync(brandId: string): Promise<KnowledgeSource[]> {
+    return await this.repo.listSources(brandId);
+  }
+
+  getDocuments(brandId: string): KnowledgeDocument[] {
+    return Array.from(this.localDocuments.values()).filter((d) => d.brandId === brandId);
+  }
+
+  async getDocumentsAsync(brandId: string): Promise<KnowledgeDocument[]> {
+    return await this.repo.listDocuments(brandId);
+  }
+
+  getChunks(brandId: string, documentId?: string): KnowledgeChunk[] {
+    return Array.from(this.localChunks.values()).filter(
+      (c) => c.brandId === brandId && (!documentId || c.documentId === documentId)
+    );
+  }
+
+  async getChunksAsync(brandId: string, documentId?: string): Promise<KnowledgeChunk[]> {
+    return await this.repo.listChunks(brandId, documentId);
+  }
+
+  getEvidenceSources(brandId: string): EvidenceSource[] {
+    return Array.from(this.localEvidenceSources.values()).filter((s) => s.brandId === brandId);
+  }
+
+  async getEvidenceSourcesAsync(brandId: string): Promise<EvidenceSource[]> {
+    return await this.repo.listEvidenceSources(brandId);
+  }
+
+  getEvidenceClaims(brandId: string): EvidenceClaim[] {
+    return Array.from(this.localEvidenceClaims.values()).filter((c) => c.brandId === brandId);
+  }
+
+  async getEvidenceClaimsAsync(brandId: string): Promise<EvidenceClaim[]> {
+    return await this.repo.listEvidenceClaims(brandId);
+  }
+
+  // --- Trust Taxonomy & Helper Logic (Requirement 8) ---
+
+  /**
+   * Infers trust level without blindly assigning brand 1P to arbitrary external gov/edu hosts.
+   */
+  public inferTrustLevel(
+    sourceType: SourceType,
+    url?: string,
+    brandPrimaryDomain?: string,
+    competitorDomains: string[] = [],
+    partnerDomains: string[] = []
+  ): TrustLevel {
+    if (sourceType === "manual_note") {
+      return "brand_authoritative";
+    }
+    if (sourceType === "file_upload") {
+      return "brand_authoritative";
+    }
+
+    if (url) {
+      try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.toLowerCase();
+
+        // 1. Matches Brand's own domain
+        if (brandPrimaryDomain) {
+          const cleanBrandDomain = brandPrimaryDomain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, "");
+          if (host === cleanBrandDomain || host.endsWith(`.${cleanBrandDomain}`)) {
+            return "brand_authoritative";
+          }
+        }
+
+        // 2. Matches Competitor
+        if (competitorDomains.some((cd) => host === cd || host.endsWith(`.${cd}`))) {
+          return "competitor";
+        }
+
+        // 3. Matches Partner
+        if (partnerDomains.some((pd) => host === pd || host.endsWith(`.${pd}`))) {
+          return "partner";
+        }
+
+        // 4. Institutional/Government/Academic domain (external authoritative, NOT brand 1p)
+        if (host.endsWith(".gov") || host.endsWith(".mil") || host.endsWith(".edu")) {
+          return "external_authoritative";
+        }
+
+        // 5. Crawled / external web sources
+        if (sourceType === "website" || sourceType === "sitemap") {
+          return "unverified_external";
+        }
+      } catch {
+        return "untrusted_crawl";
       }
     }
 
-    // Remove document
-    this.documents.delete(documentId);
-    return true;
-  }
-
-  // --- Private Helper Methods ---
-
-  private inferTrustLevel(sourceType: string, url?: string): TrustLevel {
-    if (sourceType === "manual_note") return "verified_1p";
-    if (sourceType === "file_upload") return "verified_1p";
-    if (url && (url.includes("gov") || url.includes("edu") || url.includes("official"))) {
-      return "verified_1p";
-    }
-    return "partner_2p";
+    return "unverified_external";
   }
 
   private autoClassifyDocument(title: string, text: string): DocumentClassification {
@@ -419,90 +603,55 @@ export class BrandBrainIngestionService {
   }
 
   private seedDefaultKnowledge() {
-    // Seed initial high-quality knowledge for default brand-001 (Acme AI Cloud)
     const brandId = "brand-001";
+    const organizationId = "org-001";
     const srcId1 = "src-001";
     const docId1 = "doc-001";
 
     const source1: KnowledgeSource = {
       id: srcId1,
       brandId,
-      organizationId: "org-001",
-      name: "Acme Cloud Whitepaper 2026",
+      organizationId,
+      name: "Acme Cloud Architecture Overview 2026",
       type: "file_upload",
-      sourceUrl: "https://acmecloud.ai/whitepaper-2026.pdf",
-      trustLevel: "verified_1p",
+      sourceUrl: "https://acmecloud.ai/docs/architecture",
+      trustLevel: "brand_authoritative",
       status: "active",
       createdAt: new Date("2026-01-15").toISOString(),
       updatedAt: new Date("2026-01-15").toISOString()
     };
-    this.sources.set(srcId1, source1);
+    this.localSources.set(srcId1, source1);
+    this.repo.saveSource(source1).catch(() => {});
 
-    const doc1Text = `# Acme Cloud Autonomous Architecture
-
-## High Availability & Resilience
-Acme Cloud guarantees 99.999% availability across 35 global multi-cloud regions with sub-millisecond failover.
-
-## Performance Benchmarks
-Benchmarked throughput achieves 150,000 req/sec at p99 latency under 12ms. Our distributed vector cache delivers 3.4x faster crawl speed compared to legacy relational models.
-
-## Security & Compliance
-Acme Cloud is SOC 2 Type II certified and ISO 27001 audited with end-to-end hardware enclave encryption. Enterprise customers reported $1.4M saved in infrastructure compute annually.`;
-
-    const doc1Hash = ContentSanitizer.computeContentHash(doc1Text);
     const doc1: KnowledgeDocument = {
       id: docId1,
       brandId,
+      organizationId,
       sourceId: srcId1,
-      title: "Acme Cloud Autonomous Architecture Whitepaper",
-      url: "https://acmecloud.ai/whitepaper-2026.pdf",
-      fileType: "pdf",
-      storageKey: `org-001/${brandId}/docs/${doc1Hash.slice(0, 16)}.pdf`,
-      fileSizeBytes: 4096,
-      contentHash: doc1Hash,
-      extractedText: doc1Text,
-      documentMetadata: { pages: 18, format: "pdf" },
+      title: "Acme Cloud Architecture Overview 2026",
+      fileType: "md",
+      fileSizeBytes: 2450,
+      contentHash: "hash-seed-001",
+      revision: 1,
+      extractedText: "Acme Cloud is an enterprise-grade AI content and vector search platform.",
+      documentMetadata: { seeded: true },
       parsingStatus: "parsed",
-      trustLevel: "verified_1p",
+      trustLevel: "brand_authoritative",
       classification: "technical_spec",
-      chunkCount: 3,
+      chunkCount: 2,
       hasUntrustedDirectives: false,
       sanitizationNotes: [],
       createdAt: new Date("2026-01-15").toISOString(),
       updatedAt: new Date("2026-01-15").toISOString()
     };
-    this.documents.set(docId1, doc1);
+    this.localDocuments.set(docId1, doc1);
+    this.repo.saveDocument(doc1).catch(() => {});
 
-    const rawChunks = this.chunker.chunkDocument(doc1Text, { documentId: docId1, sourceId: srcId1 });
-    rawChunks.forEach((rc, i) => {
-      const chkId = `chk-00${i + 1}`;
-      const embedding = this.embeddingProvider instanceof DeterministicEmbeddingProvider
-        ? (this.embeddingProvider as any).computeVector(rc.content)
-        : new Array(768).fill(0.01);
-
-      this.chunks.set(chkId, {
-        id: chkId,
-        brandId,
-        documentId: docId1,
-        sourceId: srcId1,
-        chunkIndex: rc.chunkIndex,
-        content: rc.content,
-        contentHash: rc.contentHash,
-        tokenCount: rc.tokenCount,
-        headingHierarchy: rc.headingHierarchy,
-        chunkType: rc.chunkType,
-        embedding,
-        metadata: rc.metadata,
-        trustLevel: "verified_1p",
-        createdAt: new Date("2026-01-15").toISOString()
-      });
-    });
-
-    // Seed Evidence Claims
     const evSrcId = "evs-001";
-    this.evidenceSources.set(evSrcId, {
+    const evSource: EvidenceSource = {
       id: evSrcId,
       brandId,
+      organizationId,
       name: "Acme Cloud Whitepaper 2026",
       url: "https://acmecloud.ai/whitepaper-2026.pdf",
       publisher: "Acme Research Labs",
@@ -510,16 +659,21 @@ Acme Cloud is SOC 2 Type II certified and ISO 27001 audited with end-to-end hard
       isPrimarySource: true,
       createdAt: new Date("2026-01-15").toISOString(),
       updatedAt: new Date("2026-01-15").toISOString()
-    });
+    };
+    this.localEvidenceSources.set(evSrcId, evSource);
+    this.repo.saveEvidenceSource(evSource).catch(() => {});
 
     const claim1: EvidenceClaim = {
       id: "clm-001",
       brandId,
+      organizationId,
       claimText: "Acme Cloud guarantees 99.999% availability across 35 global multi-cloud regions.",
       claimType: "statistic",
       verificationStatus: "verified",
       confidenceScore: 0.98,
       extractedEntities: { metric: "99.999%", regions: 35 },
+      verifiedBy: "user-marcus",
+      verifiedAt: new Date("2026-01-15").toISOString(),
       sources: [
         {
           id: "cls-001",
@@ -535,57 +689,8 @@ Acme Cloud is SOC 2 Type II certified and ISO 27001 audited with end-to-end hard
       createdAt: new Date("2026-01-15").toISOString(),
       updatedAt: new Date("2026-01-15").toISOString()
     };
-    this.evidenceClaims.set("clm-001", claim1);
-
-    const claim2: EvidenceClaim = {
-      id: "clm-002",
-      brandId,
-      claimText: "Delivers 3.4x faster crawl speed compared to legacy relational models.",
-      claimType: "benchmark",
-      verificationStatus: "verified",
-      confidenceScore: 0.94,
-      extractedEntities: { multiplier: "3.4x", p99Latency: "<12ms" },
-      sources: [
-        {
-          id: "cls-002",
-          claimId: "clm-002",
-          sourceId: evSrcId,
-          sourceName: "Acme Cloud Whitepaper 2026",
-          documentId: docId1,
-          exactQuote: "Our distributed vector cache delivers 3.4x faster crawl speed compared to legacy relational models.",
-          pageOrSection: "Performance Benchmarks",
-          createdAt: new Date("2026-01-15").toISOString()
-        }
-      ],
-      createdAt: new Date("2026-01-15").toISOString(),
-      updatedAt: new Date("2026-01-15").toISOString()
-    };
-    this.evidenceClaims.set("clm-002", claim2);
-
-    const claim3: EvidenceClaim = {
-      id: "clm-003",
-      brandId,
-      claimText: "Enterprise customers reported $1.4M saved in infrastructure compute annually.",
-      claimType: "customer_result",
-      verificationStatus: "verified",
-      confidenceScore: 0.92,
-      extractedEntities: { amount: "$1.4M" },
-      sources: [
-        {
-          id: "cls-003",
-          claimId: "clm-003",
-          sourceId: evSrcId,
-          sourceName: "Acme Cloud Whitepaper 2026",
-          documentId: docId1,
-          exactQuote: "Enterprise customers reported $1.4M saved in infrastructure compute annually.",
-          pageOrSection: "Security & Compliance",
-          createdAt: new Date("2026-01-15").toISOString()
-        }
-      ],
-      createdAt: new Date("2026-01-15").toISOString(),
-      updatedAt: new Date("2026-01-15").toISOString()
-    };
-    this.evidenceClaims.set("clm-003", claim3);
+    this.localEvidenceClaims.set("clm-001", claim1);
+    this.repo.saveEvidenceClaims([claim1]).catch(() => {});
   }
 }
 

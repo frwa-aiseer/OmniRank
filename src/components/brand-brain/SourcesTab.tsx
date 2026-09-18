@@ -83,36 +83,44 @@ export function SourcesTab({
 
     setIsSubmitting(true);
     try {
-      let content = rawText;
-      let fileType: any = "txt";
+      let res: Response;
 
       if (ingestionType === "file" && selectedFile) {
-        content = await selectedFile.text();
-        const ext = selectedFile.name.split(".").pop()?.toLowerCase();
-        if (ext && ["pdf", "docx", "txt", "md", "csv", "xlsx", "html"].includes(ext)) {
-          fileType = ext;
-        }
-      } else if (ingestionType === "url") {
-        fileType = "html";
-        content = content || `<html><head><title>${sourceName || "Crawled Page"}</title></head><body><h1>${sourceName || "Source Page"}</h1><p>Source URL: ${sourceUrl}</p><p>Indexed content from ${sourceUrl}</p></body></html>`;
-      } else if (ingestionType === "note") {
-        fileType = "note";
-      }
+        // Binary upload via FormData without converting PDF/DOCX/XLSX to strings
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+        formData.append("sourceName", sourceName || selectedFile.name.replace(/\.[^/.]+$/, ""));
+        formData.append("trustLevel", trustLevel);
+        formData.append("classification", classification);
 
-      const res = await fetch(`/api/brand-brain/${brandId}/ingest`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sourceType: ingestionType === "file" ? "file_upload" : ingestionType === "url" ? "website" : "manual_note",
-          sourceName: sourceName || selectedFile?.name || "Knowledge Document",
-          sourceUrl: sourceUrl || undefined,
-          fileType,
-          fileName: selectedFile?.name,
-          content,
-          trustLevel,
-          classification
-        })
-      });
+        res = await fetch(`/api/brand-brain/${brandId}/upload`, {
+          method: "POST",
+          body: formData
+        });
+      } else {
+        let content = rawText;
+        let fileType: any = "txt";
+
+        if (ingestionType === "url") {
+          fileType = "html";
+        } else if (ingestionType === "note") {
+          fileType = "note";
+        }
+
+        res = await fetch(`/api/brand-brain/${brandId}/ingest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceType: ingestionType === "url" ? "website" : "manual_note",
+            sourceName: sourceName || (ingestionType === "url" ? sourceUrl : "Manual Note"),
+            sourceUrl: sourceUrl || undefined,
+            fileType,
+            content,
+            trustLevel,
+            classification
+          })
+        });
+      }
 
       if (!res.ok) {
         const err = await res.json();
@@ -268,10 +276,12 @@ export function SourcesTab({
                 onChange={(e) => setTrustLevel(e.target.value as TrustLevel)}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 focus:outline-none"
               >
-                <option value="verified_1p">Verified 1st-Party (Official Brand Doc)</option>
-                <option value="partner_2p">Partner 2nd-Party (Verified Partner)</option>
-                <option value="unverified_3p">Unverified 3rd-Party (External Industry Study)</option>
-                <option value="untrusted">Untrusted / Public Crawl</option>
+                <option value="brand_authoritative">Brand Authoritative (Official 1st-Party)</option>
+                <option value="external_authoritative">External Authoritative (.gov / .edu / institutional)</option>
+                <option value="partner">Partner (Ecosystem / Integration)</option>
+                <option value="competitor">Competitor (Comparative Intel)</option>
+                <option value="unverified_external">Unverified External (General 3rd-Party)</option>
+                <option value="untrusted_crawl">Untrusted / Public Web Crawl</option>
               </select>
             </div>
 
@@ -449,6 +459,9 @@ export function SourcesTab({
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold text-slate-900 text-sm">{doc.title}</span>
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 border border-purple-200">
+                      v{doc.revision || 1}
+                    </span>
                     <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-medium">
                       {doc.fileType}
                     </span>

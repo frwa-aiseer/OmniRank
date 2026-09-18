@@ -229,9 +229,20 @@ export interface BrandBrainKnowledge {
   completenessScore: number;
 }
 
-// Ingestion Pipeline Types (OR-P04)
+// Ingestion Pipeline Types (OR-P04 & OR-G04B)
 export type SourceType = "website" | "file_upload" | "manual_note" | "sitemap" | "api_sync";
-export type TrustLevel = "verified_1p" | "partner_2p" | "unverified_3p" | "untrusted";
+export type TrustLevel =
+  | "brand_authoritative"
+  | "external_authoritative"
+  | "partner"
+  | "competitor"
+  | "unverified_external"
+  | "untrusted_crawl"
+  | "verified_1p"
+  | "partner_2p"
+  | "unverified_3p"
+  | "untrusted";
+
 export type DocumentFileType = "pdf" | "docx" | "txt" | "md" | "csv" | "xlsx" | "html" | "note";
 export type DocumentClassification =
   | "product_doc"
@@ -263,6 +274,7 @@ export interface KnowledgeSource {
 export interface KnowledgeDocument {
   id: string;
   brandId: string;
+  organizationId?: string;
   sourceId: string;
   title: string;
   url?: string;
@@ -270,6 +282,7 @@ export interface KnowledgeDocument {
   storageKey?: string;
   fileSizeBytes: number;
   contentHash: string;
+  revision?: number;
   extractedText: string;
   documentMetadata: Record<string, unknown>;
   parsingStatus: ParsingStatus;
@@ -285,6 +298,7 @@ export interface KnowledgeDocument {
 export interface KnowledgeChunk {
   id: string;
   brandId: string;
+  organizationId?: string;
   documentId: string;
   sourceId: string;
   chunkIndex: number;
@@ -308,11 +322,12 @@ export type EvidenceClaimType =
   | "feature"
   | "quote";
 
-export type EvidenceVerificationStatus = "unverified" | "verified" | "disputed" | "rejected";
+export type EvidenceVerificationStatus = "unverified" | "needs_review" | "verified" | "disputed" | "rejected";
 
 export interface EvidenceSource {
   id: string;
   brandId: string;
+  organizationId?: string;
   name: string;
   url?: string;
   publisher: string;
@@ -339,12 +354,15 @@ export interface EvidenceClaimSourceLink {
 export interface EvidenceClaim {
   id: string;
   brandId: string;
+  organizationId?: string;
   claimText: string;
   claimType: EvidenceClaimType;
   verificationStatus: EvidenceVerificationStatus;
   confidenceScore: number;
   extractedEntities: Record<string, unknown>;
   sources: EvidenceClaimSourceLink[];
+  verifiedBy?: string;
+  verifiedAt?: string;
   validFrom?: string;
   validUntil?: string;
   createdAt: string;
@@ -353,6 +371,7 @@ export interface EvidenceClaim {
 
 export interface IngestionInput {
   brandId: string;
+  organizationId?: string;
   sourceType: SourceType;
   sourceName: string;
   sourceUrl?: string;

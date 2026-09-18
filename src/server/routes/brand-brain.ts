@@ -1,23 +1,46 @@
 import { Router, Request, Response } from "express";
+import multer from "multer";
 import { brandBrainRepo } from "../brand-brain/repo.ts";
 import { tenancyRepo } from "../auth/tenancy.ts";
-import { OrgRole, BrandRole } from "../../types/index.ts";
+import { authenticateRequest } from "../auth/middleware.ts";
+import { OrgRole, BrandRole, DocumentFileType } from "../../types/index.ts";
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB max limit
+});
 
 const router = Router();
 
+// Apply Supabase authentication middleware to all brand-brain routes
+router.use(authenticateRequest);
+
 // Helper to extract authenticated user and verify tenancy/brand membership
 function resolveAuthContext(req: Request, brandId: string) {
-  const userId = (req.headers["x-user-id"] as string) || "00000000-0000-4000-8000-000000000001";
-  const userProfile = tenancyRepo.getProfile({ isAuthenticated: true, isServiceRole: true, userId }, userId);
-  const user = userProfile
-    ? { id: userProfile.id, name: userProfile.fullName }
-    : { id: userId, name: "System Strategist" };
+  const ctx = req.securityContext;
+  if (!ctx || !ctx.isAuthenticated || !ctx.userId) {
+    return { error: "Authentication required", status: 401, user: null, orgRole: null, brandRole: null };
+  }
 
+  const userId = ctx.userId;
   const isMember = tenancyRepo.isBrandMember(brandId, userId);
-  const orgRole: OrgRole = "admin";
-  const brandRole: BrandRole = tenancyRepo.getBrandRole(brandId, userId) || "strategist";
+  if (!isMember) {
+    return { error: "Forbidden: Not authorized for this brand", status: 403, user: null, orgRole: null, brandRole: null };
+  }
 
-  return { error: null, status: 200, user, orgRole, brandRole };
+  const user = {
+    id: userId,
+    name: req.user?.fullName || req.user?.email || "Authenticated User"
+  };
+
+  try {
+    const brand = tenancyRepo.getBrandById(ctx, brandId);
+    const orgRole: OrgRole = brand ? (tenancyRepo.getOrgRole(brand.organizationId, userId) || "member") : "member";
+    const brandRole: BrandRole = tenancyRepo.getBrandRole(brandId, userId) || "viewer";
+    return { error: null, status: 200, user, orgRole, brandRole };
+  } catch {
+    return { error: "Forbidden: Not authorized for this brand", status: 403, user: null, orgRole: null, brandRole: null };
+  }
 }
 
 // 1. Get Brand Brain Core Knowledge
@@ -198,7 +221,7 @@ router.put("/:brandId/voice", (req: Request, res: Response) => {
   res.json({ voiceProfile });
 });
 
-router.post("/:brandId/voice/examples", (req: Request, res: Response) => {
+router.post(["/:brandId/voice/examples", "/:brandId/voice-examples"], (req: Request, res: Response) => {
   const { brandId } = req.params;
   const auth = resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
@@ -215,7 +238,7 @@ router.post("/:brandId/voice/examples", (req: Request, res: Response) => {
   res.status(201).json({ example });
 });
 
-router.delete("/:brandId/voice/examples/:exampleId", (req: Request, res: Response) => {
+router.delete(["/:brandId/voice/examples/:exampleId", "/:brandId/voice-examples/:exampleId"], (req: Request, res: Response) => {
   const { brandId, exampleId } = req.params;
   const auth = resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
@@ -248,6 +271,27 @@ router.post("/:brandId/terminology", (req: Request, res: Response) => {
 
   const term = brandBrainRepo.createTerminology(brandId, req.body, auth.user);
   res.status(201).json({ term });
+});
+
+router.put("/:brandId/terminology/:termId", (req: Request, res: Response) => {
+  const { brandId, termId } = req.params;
+  const auth = resolveAuthContext(req, brandId);
+  if (auth.error || !auth.user) {
+    res.status(auth.status).json({ error: auth.error });
+    return;
+  }
+
+  if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"])) {
+    res.status(403).json({ error: "Permission denied to update terminology" });
+    return;
+  }
+
+  try {
+    const term = brandBrainRepo.updateTerminology(brandId, termId, req.body, auth.user);
+    res.json({ term });
+  } catch (err: any) {
+    res.status(404).json({ error: err.message });
+  }
 });
 
 router.post("/:brandId/terminology/:termId/archive", (req: Request, res: Response) => {
@@ -392,8 +436,75 @@ router.post("/:brandId/competitors/:competitorId/archive", (req: Request, res: R
 });
 
 // ==========================================
-// Ingestion & Semantic Knowledge Base Routes (OR-P04)
+// Ingestion & Semantic Knowledge Base Routes (OR-P04 & OR-G04B)
 // ==========================================
+
+// Multipart Binary File Upload (PDF, DOCX, XLSX, CSV, MD, TXT, HTML)
+router.post("/:brandId/upload", upload.single("file"), async (req: Request, res: Response) => {
+  const { brandId } = req.params;
+  const auth = resolveAuthContext(req, brandId);
+  if (auth.error || !auth.user) {
+    res.status(auth.status).json({ error: auth.error });
+    return;
+  }
+
+  if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"])) {
+    res.status(403).json({ error: "Only Strategists and Writers can ingest content into Brand Brain" });
+    return;
+  }
+
+  if (!req.file) {
+    res.status(400).json({ error: "No file was uploaded in the 'file' field" });
+    return;
+  }
+
+  try {
+    const rawBuffer = req.file.buffer;
+    const fileName = req.file.originalname || "document";
+    const ext = fileName.split(".").pop()?.toLowerCase() || "txt";
+    const fileType = (["pdf", "docx", "xlsx", "csv", "md", "html", "txt", "note"].includes(ext)
+      ? ext
+      : "txt") as DocumentFileType;
+
+    const sourceName = req.body.sourceName || fileName.replace(/\.[^/.]+$/, "");
+    const trustLevel = req.body.trustLevel;
+    const classification = req.body.classification;
+
+    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
+    const result = await brandBrainIngestion.ingestContent(
+      {
+        brandId,
+        sourceType: "file_upload",
+        sourceName,
+        fileType,
+        fileName,
+        fileBufferOrText: rawBuffer,
+        trustLevel,
+        classification
+      },
+      auth.user
+    );
+
+    brandBrainRepo.logAudit({
+      brandId,
+      userId: auth.user.id,
+      userName: auth.user.name,
+      entityType: "profile",
+      entityId: result.document.id,
+      action: "create",
+      summary: `Uploaded binary file '${fileName}' (${result.chunks.length} chunks, ${result.evidenceClaims.length} claims).`,
+      details: {
+        isDuplicate: result.isDuplicate,
+        fileType,
+        fileSizeBytes: req.file.size
+      }
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Binary file upload failed" });
+  }
+});
 
 // Ingest Content (File upload, website crawl, manual note, spreadsheet)
 router.post("/:brandId/ingest", async (req: Request, res: Response) => {
@@ -597,8 +708,8 @@ router.put("/:brandId/evidence/:claimId/status", async (req: Request, res: Respo
     return;
   }
 
-  if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist"])) {
-    res.status(403).json({ error: "Only Strategists and Admins can verify or reject evidence claims" });
+  if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "reviewer"])) {
+    res.status(403).json({ error: "Only Strategists, Reviewers, and Admins can verify or reject evidence claims" });
     return;
   }
 

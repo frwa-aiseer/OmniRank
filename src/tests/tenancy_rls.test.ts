@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import fs from "fs";
+import path from "path";
 import { TenancyRepository, SecurityContext, TenancyAuthorizationError } from "../server/auth/tenancy.ts";
 
 describe("OR-P02 Authentication, Tenancy and RLS Tests", () => {
@@ -179,22 +181,106 @@ describe("OR-P02 Authentication, Tenancy and RLS Tests", () => {
     expect(alphaProfile?.email).toBe("alpha@orga.com");
   });
 
+  it("should enforce Agency Isolation: Normal members see only assigned brands; Admins see all org brands", () => {
+    const { org } = repo.createOrganization(userAlphaContext, "Agency Corp", "agency-corp");
+    const brand1 = repo.createBrand(userAlphaContext, org.id, "Client Alpha", "client-alpha", "alpha.com");
+    const brand2 = repo.createBrand(userAlphaContext, org.id, "Client Beta", "client-beta", "beta.com");
+
+    // Add Beta as normal member in the org
+    repo.addOrganizationMember(userAlphaContext, org.id, userBetaId, "member");
+
+    // Before assignment, Beta sees 0 brands
+    const betaBrandsInitial = repo.getBrands(userBetaContext, org.id);
+    expect(betaBrandsInitial).toHaveLength(0);
+
+    // Alpha (Owner) sees both brands
+    const alphaBrands = repo.getBrands(userAlphaContext, org.id);
+    expect(alphaBrands).toHaveLength(2);
+
+    // Assign Beta to Client Alpha only
+    repo.addBrandMember(userAlphaContext, brand1.id, userBetaId, "writer");
+
+    // Beta now sees Client Alpha, but NOT Client Beta
+    const betaBrandsAfter = repo.getBrands(userBetaContext, org.id);
+    expect(betaBrandsAfter).toHaveLength(1);
+    expect(betaBrandsAfter[0].id).toBe(brand1.id);
+  });
+
+  it("should prevent normal members from enumerating all organization users", () => {
+    const { org } = repo.createOrganization(userAlphaContext, "Large Agency", "large-agency");
+    const brand1 = repo.createBrand(userAlphaContext, org.id, "Brand 1", "brand-1", "b1.com");
+
+    // Add Beta (member) and Gamma (member)
+    repo.addOrganizationMember(userAlphaContext, org.id, userBetaId, "member");
+    repo.addOrganizationMember(userAlphaContext, org.id, userGammaId, "member");
+
+    // Assign Beta to Brand 1 only; Gamma is unassigned or assigned elsewhere
+    repo.addBrandMember(userAlphaContext, brand1.id, userBetaId, "writer");
+
+    // Alpha (Owner) sees all 3 members (Alpha, Beta, Gamma)
+    const alphaMembers = repo.getOrganizationMembers(userAlphaContext, org.id);
+    expect(alphaMembers).toHaveLength(3);
+
+    // Beta (normal member) cannot see Gamma because they do not share any assigned brand
+    const betaMembers = repo.getOrganizationMembers(userBetaContext, org.id);
+    const betaSeenUserIds = betaMembers.map((m) => m.userId);
+    expect(betaSeenUserIds).toContain(userBetaId);
+    expect(betaSeenUserIds).toContain(userAlphaId); // Shares Brand 1 with Alpha
+    expect(betaSeenUserIds).not.toContain(userGammaId); // Gamma is isolated!
+  });
+
+  it("should enforce Role Authority: Admin cannot demote/remove Owner, and Brand Strategist cannot manage brand members", () => {
+    const { org } = repo.createOrganization(userAlphaContext, "Protected Org", "protected-org");
+    const brand = repo.createBrand(userAlphaContext, org.id, "Protected Brand", "protected-brand", "prot.com");
+
+    // Add Beta as Admin
+    const adminMember = repo.addOrganizationMember(userAlphaContext, org.id, userBetaId, "admin");
+    const ownerMember = repo.getOrganizationMembers(userAlphaContext, org.id).find((m) => m.userId === userAlphaId)!;
+
+    // Beta (Admin) CANNOT remove Alpha (Owner)
+    expect(() => {
+      repo.removeOrganizationMember(userBetaContext, org.id, ownerMember.id);
+    }).toThrow(TenancyAuthorizationError);
+
+    // Beta (Admin) CANNOT demote Alpha (Owner)
+    expect(() => {
+      repo.updateOrganizationMember(userBetaContext, org.id, ownerMember.id, "member");
+    }).toThrow(TenancyAuthorizationError);
+
+    // Beta (Admin) CANNOT promote themselves to Owner
+    expect(() => {
+      repo.updateOrganizationMember(userBetaContext, org.id, adminMember.id, "owner");
+    }).toThrow(TenancyAuthorizationError);
+
+    // Add Gamma as Brand Strategist
+    repo.addOrganizationMember(userAlphaContext, org.id, userGammaId, "member");
+    repo.addBrandMember(userAlphaContext, brand.id, userGammaId, "strategist");
+
+    // Gamma (Brand Strategist) CANNOT add brand members (Only Org Owner/Admin can)
+    expect(() => {
+      repo.addBrandMember(userGammaContext, brand.id, unassignedUserId, "writer");
+    }).toThrow(TenancyAuthorizationError);
+  });
+
   it("should enforce Supabase SECURITY DEFINER hardening guidelines across SQL migrations", () => {
-    // Read the SQL migration file
-    const fs = require("fs");
-    const path = require("path");
-    const migrationFile = path.resolve(__dirname, "../../supabase/migrations/20260916000001_auth_tenancy_rls.sql");
-    const content = fs.readFileSync(migrationFile, "utf-8");
+    // Read both SQL migration files
+    const migration1 = path.resolve(process.cwd(), "supabase/migrations/20260916000001_auth_tenancy_rls.sql");
+    const migration4 = path.resolve(process.cwd(), "supabase/migrations/20260917000004_hardened_auth_tenancy_rls.sql");
+    const migration5 = path.resolve(process.cwd(), "supabase/migrations/20260918000005_hardened_ingestion_tenancy.sql");
 
-    // Extract all SECURITY DEFINER blocks
-    const securityDefinerMatches = content.match(/SECURITY\s+DEFINER[\s\S]*?AS\s+\$\$/gi) || [];
-    expect(securityDefinerMatches.length).toBeGreaterThan(0);
+    for (const migrationFile of [migration1, migration4, migration5]) {
+      const content = fs.readFileSync(migrationFile, "utf-8");
 
-    for (const block of securityDefinerMatches) {
-      // Must explicitly set search_path to empty string: SET search_path = ''
-      expect(block).toMatch(/SET\s+search_path\s*=\s*''/i);
-      // Must NOT set search_path = public
-      expect(block).not.toMatch(/SET\s+search_path\s*=\s*public/i);
+      // Extract all SECURITY DEFINER blocks
+      const securityDefinerMatches = content.match(/SECURITY\s+DEFINER[\s\S]*?AS\s+\$\$/gi) || [];
+      expect(securityDefinerMatches.length).toBeGreaterThan(0);
+
+      for (const block of securityDefinerMatches) {
+        // Must explicitly set search_path to empty string: SET search_path = ''
+        expect(block).toMatch(/SET\s+search_path\s*=\s*''/i);
+        // Must NOT set search_path = public
+        expect(block).not.toMatch(/SET\s+search_path\s*=\s*public/i);
+      }
     }
   });
 });

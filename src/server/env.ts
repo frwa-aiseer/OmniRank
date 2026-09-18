@@ -26,12 +26,24 @@ const serverEnvSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   APP_URL: z.string().optional().default("http://localhost:3000"),
+  DEMO_MODE: z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((val) => {
+      if (val === undefined) return true;
+      if (typeof val === "boolean") return val;
+      const lower = val.toLowerCase().trim();
+      return lower === "true" || lower === "1" || lower === "demo";
+    }),
 });
 
 export function getServerEnv() {
   const parsed = serverEnvSchema.parse(process.env);
+  const isProduction = parsed.NODE_ENV === "production";
   return {
     ...parsed,
     SUPABASE_SECRET_KEY: parsed.SUPABASE_SECRET_KEY || parsed.SUPABASE_SERVICE_ROLE_KEY,
+    // Demo mode is STRICTLY disabled in production
+    DEMO_MODE: isProduction ? false : (parsed.DEMO_MODE ?? true),
   };
 }
