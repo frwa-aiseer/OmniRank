@@ -26,10 +26,10 @@
     },
     {
       "code": "OR-P04",
-      "status": "pending",
-      "startedAt": null,
-      "completedAt": null,
-      "notes": ""
+      "status": "completed",
+      "startedAt": "2026-09-17T12:00:00.000Z",
+      "completedAt": "2026-09-17T12:51:00.000Z",
+      "notes": "Implemented multi-format ingestion pipeline (PDF, DOCX, Markdown, HTML, CSV/XLSX, notes), defense-in-depth heuristic sanitizer & macro neutralizer (with untrusted data architectural isolation), hierarchical semantic chunker, gemini-embedding-2 (768d), deduplication hashing, evidence extraction engine, Sources and Evidence UI tabs, and test suite. R2 adapter implemented; live R2 verification pending credentials."
     },
     {
       "code": "OR-P05",

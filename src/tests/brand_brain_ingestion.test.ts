@@ -4,7 +4,11 @@ import { ContentSanitizer } from "../server/brand-brain/sanitizer.ts";
 import { DocumentParsers } from "../server/brand-brain/parsers.ts";
 import { SemanticChunker } from "../server/brand-brain/chunker.ts";
 import { EvidenceExtractor } from "../server/brand-brain/evidence-extractor.ts";
-import { DeterministicEmbeddingProvider, cosineSimilarity } from "../server/brand-brain/embeddings.ts";
+import {
+  DeterministicEmbeddingProvider,
+  GeminiEmbeddingProvider,
+  cosineSimilarity
+} from "../server/brand-brain/embeddings.ts";
 
 describe("Brand Brain Ingestion Pipeline (OR-P04)", () => {
   let service: BrandBrainIngestionService;
@@ -245,6 +249,23 @@ Brand B utilizes proprietary Quantum Cache with 99.999% reliability.`;
 
       const rejected = service.verifyClaim("brand-001", claimId, "rejected");
       expect(rejected.verificationStatus).toBe("rejected");
+    });
+  });
+
+  describe("8. Abstracted Embedding Provider Configuration (gemini-embedding-2)", () => {
+    it("should configure gemini-embedding-2 with 768 output dimensions and deterministic fallback", async () => {
+      const provider = new GeminiEmbeddingProvider();
+      expect(provider.name).toBe("gemini-embedding-2");
+      expect(provider.dimension).toBe(768);
+
+      const vector = await provider.generateEmbedding("High availability distributed database");
+      expect(vector).toBeDefined();
+      expect(vector.length).toBe(768);
+
+      const batch = await provider.generateBatchEmbeddings(["query 1", "query 2"]);
+      expect(batch.length).toBe(2);
+      expect(batch[0].length).toBe(768);
+      expect(batch[1].length).toBe(768);
     });
   });
 });

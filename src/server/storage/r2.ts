@@ -9,6 +9,13 @@ export interface StorageUploadResult {
   publicUrl?: string;
 }
 
+/**
+ * R2StorageService
+ *
+ * S3-compatible Cloudflare R2 object storage adapter.
+ * Status: R2 adapter implemented with safe local development fallback;
+ * live R2 bucket verification is pending provisioned Cloudflare credentials.
+ */
 export class R2StorageService {
   private accountId?: string;
   private accessKeyId?: string;

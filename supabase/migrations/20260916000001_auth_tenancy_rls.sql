@@ -98,6 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_websites_org ON public.websites(organization_id);
 
 -- ==========================================
 -- 7. Security Definer Helper Functions
+-- Security Hardening: SET search_path = '' with explicit schema qualification
 -- ==========================================
 -- Check if a user belongs to an organization
 CREATE OR REPLACE FUNCTION public.is_org_member(_org_id UUID, _user_id UUID)
@@ -105,7 +106,7 @@ RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = ''
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.organization_members
@@ -119,7 +120,7 @@ RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = ''
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.organization_members
@@ -133,7 +134,7 @@ RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = ''
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.brand_members
@@ -151,7 +152,7 @@ RETURNS BOOLEAN
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
-SET search_path = public
+SET search_path = ''
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.brand_members

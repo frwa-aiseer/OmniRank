@@ -178,4 +178,23 @@ describe("OR-P02 Authentication, Tenancy and RLS Tests", () => {
     const alphaProfile = repo.getProfile(userAlphaContext, userAlphaId);
     expect(alphaProfile?.email).toBe("alpha@orga.com");
   });
+
+  it("should enforce Supabase SECURITY DEFINER hardening guidelines across SQL migrations", () => {
+    // Read the SQL migration file
+    const fs = require("fs");
+    const path = require("path");
+    const migrationFile = path.resolve(__dirname, "../../supabase/migrations/20260916000001_auth_tenancy_rls.sql");
+    const content = fs.readFileSync(migrationFile, "utf-8");
+
+    // Extract all SECURITY DEFINER blocks
+    const securityDefinerMatches = content.match(/SECURITY\s+DEFINER[\s\S]*?AS\s+\$\$/gi) || [];
+    expect(securityDefinerMatches.length).toBeGreaterThan(0);
+
+    for (const block of securityDefinerMatches) {
+      // Must explicitly set search_path to empty string: SET search_path = ''
+      expect(block).toMatch(/SET\s+search_path\s*=\s*''/i);
+      // Must NOT set search_path = public
+      expect(block).not.toMatch(/SET\s+search_path\s*=\s*public/i);
+    }
+  });
 });

@@ -18,6 +18,10 @@ export class DeterministicEmbeddingProvider implements EmbeddingProvider {
   name = "deterministic-768";
   dimension = 768;
 
+  constructor(dimension: number = 768) {
+    this.dimension = dimension;
+  }
+
   async generateEmbedding(text: string): Promise<number[]> {
     return this.computeVector(text);
   }
@@ -78,12 +82,20 @@ export class DeterministicEmbeddingProvider implements EmbeddingProvider {
 }
 
 /**
- * Google GenAI / Gemini Embedding Provider
+ * Google GenAI / Gemini Embedding Provider (gemini-embedding-2)
+ * Centralized model configuration with configurable 768 output dimensionality
  */
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
-  name = "gemini-text-embedding-004";
+  name = "gemini-embedding-2";
+  modelName = "gemini-embedding-2";
   dimension = 768;
-  private fallback = new DeterministicEmbeddingProvider();
+  private fallback = new DeterministicEmbeddingProvider(768);
+
+  constructor(modelName: string = "gemini-embedding-2", dimension: number = 768) {
+    this.modelName = modelName;
+    this.dimension = dimension;
+    this.fallback = new DeterministicEmbeddingProvider(dimension);
+  }
 
   async generateEmbedding(text: string): Promise<number[]> {
     const env = getServerEnv();
@@ -94,8 +106,11 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
     try {
       const ai = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
       const response = await ai.models.embedContent({
-        model: "text-embedding-004",
-        contents: text
+        model: this.modelName,
+        contents: text,
+        config: {
+          outputDimensionality: this.dimension
+        }
       });
 
       const resAny = response as any;
