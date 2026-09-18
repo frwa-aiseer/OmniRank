@@ -4,8 +4,15 @@ import * as XLSX from "xlsx";
 import { parse as parseCsvSync } from "csv-parse/sync";
 import { DocumentFileType } from "../../types/index.ts";
 
-const require = createRequire(import.meta.url);
-const pdfLib = require("pdf-parse");
+const nodeRequire =
+  typeof require !== "undefined"
+    ? require
+    : createRequire(
+        typeof import.meta !== "undefined" && import.meta.url
+          ? import.meta.url
+          : "file:///app/server.js"
+      );
+const pdfLib = nodeRequire("pdf-parse");
 
 export interface ParsedDocumentResult {
   title: string;

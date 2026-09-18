@@ -5,7 +5,8 @@ export type AppView =
   | "calendar"
   | "growth"
   | "brand-brain"
-  | "settings";
+  | "settings"
+  | "auth";
 
 export type OrgRole = "owner" | "admin" | "member";
 export type BrandRole = "strategist" | "writer" | "reviewer" | "viewer";
@@ -46,6 +47,7 @@ export interface Brand {
   slug: string;
   primaryDomain: string;
   industry?: string;
+  status?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -408,6 +410,51 @@ export interface UserProfile {
   avatarUrl?: string;
   orgRole: OrgRole;
   brandRole: BrandRole;
+}
+
+export type ArticleStatus = "drafting" | "review" | "approved" | "published";
+
+export interface ArticleDocument {
+  id: string;
+  brandId: string;
+  title: string;
+  targetKeyword: string;
+  status: ArticleStatus;
+  version: string;
+  canonicalBlocksCount: number;
+  evidenceClaimsCount: number;
+  authorName: string;
+  summary: string;
+  scheduledDate?: string;
+  targetCms?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OpportunityType = "new_content" | "content_refresh" | "cluster_expansion" | "decay_defense";
+
+export interface OpportunitySignal {
+  id: string;
+  brandId: string;
+  title: string;
+  type: OpportunityType;
+  priorityScore: number;
+  targetConcept: string;
+  audienceMatch: string;
+  commercialIntent: "high" | "medium" | "low";
+  createdAt: string;
+}
+
+export interface GrowthMetrics {
+  impressions: number;
+  clicks: number;
+  avgCtr: number;
+  impressionsDeltaPct: number;
+  clicksDeltaPct: number;
+  ctrDeltaPct: number;
+  isConnected: boolean;
+  connectedProperty?: string;
+  lastSyncedAt?: string;
 }
 
 export interface TenancyContext {

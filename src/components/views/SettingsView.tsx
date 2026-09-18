@@ -14,6 +14,8 @@ import {
   Server,
   Database,
   RefreshCw,
+  Trash2,
+  XCircle,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext.tsx";
 import { OrgRole, BrandRole } from "../../types/index.ts";
@@ -35,19 +37,24 @@ export function SettingsView() {
     currentOrg,
     setCurrentOrg,
     createOrg,
+    deleteOrg,
     brands,
     currentBrand,
     setCurrentBrand,
     createBrand,
+    deleteBrand,
     websites,
     currentWebsite,
     createWebsite,
+    deleteWebsite,
     currentUser,
     setCurrentUserRole,
     orgMembers,
     brandMembers,
     addOrgMember,
+    removeOrgMember,
     addBrandMember,
+    removeBrandMember,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<"tenancy" | "members" | "websites" | "rls-verify">("tenancy");
@@ -67,6 +74,11 @@ export function SettingsView() {
   const [newMemberEmail, setNewMemberEmail] = useState("");
   const [newMemberOrgRole, setNewMemberOrgRole] = useState<OrgRole>("member");
   const [newMemberBrandRole, setNewMemberBrandRole] = useState<BrandRole>("writer");
+
+  // Feedback and deletion states
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Real Server & Auth Status State
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
@@ -102,41 +114,161 @@ export function SettingsView() {
   const handleCreateOrg = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newOrgName || !newOrgSlug) return;
-    await createOrg(newOrgName, newOrgSlug);
-    setNewOrgName("");
-    setNewOrgSlug("");
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await createOrg(newOrgName, newOrgSlug);
+      setActionSuccess(`Organization "${newOrgName}" created successfully.`);
+      setNewOrgName("");
+      setNewOrgSlug("");
+    } catch (err: any) {
+      setActionError(err.message || "Failed to create organization");
+    }
+  };
+
+  const handleDeleteOrg = async (orgId: string, orgName: string) => {
+    if (!window.confirm(`Are you sure you want to delete organization "${orgName}"? All associated brands, websites, and data will be removed.`)) {
+      return;
+    }
+    setDeletingId(orgId);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await deleteOrg(orgId);
+      setActionSuccess(`Organization "${orgName}" deleted.`);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to delete organization");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleCreateBrand = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newBrandName || !newBrandSlug || !newBrandDomain) return;
-    await createBrand(newBrandName, newBrandSlug, newBrandDomain, newBrandIndustry);
-    setNewBrandName("");
-    setNewBrandSlug("");
-    setNewBrandDomain("");
-    setNewBrandIndustry("");
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await createBrand(newBrandName, newBrandSlug, newBrandDomain, newBrandIndustry);
+      setActionSuccess(`Brand "${newBrandName}" created successfully.`);
+      setNewBrandName("");
+      setNewBrandSlug("");
+      setNewBrandDomain("");
+      setNewBrandIndustry("");
+    } catch (err: any) {
+      setActionError(err.message || "Failed to create brand");
+    }
+  };
+
+  const handleDeleteBrand = async (brandId: string, brandName: string) => {
+    if (!window.confirm(`Are you sure you want to delete brand "${brandName}"? All linked websites and content will be removed.`)) {
+      return;
+    }
+    setDeletingId(brandId);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await deleteBrand(brandId);
+      setActionSuccess(`Brand "${brandName}" deleted.`);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to delete brand");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleCreateWebsite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newWebsiteDomain) return;
-    await createWebsite(newWebsiteDomain, newWebsiteSitemap);
-    setNewWebsiteDomain("");
-    setNewWebsiteSitemap("");
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await createWebsite(newWebsiteDomain, newWebsiteSitemap);
+      setActionSuccess(`Website "${newWebsiteDomain}" registered successfully.`);
+      setNewWebsiteDomain("");
+      setNewWebsiteSitemap("");
+    } catch (err: any) {
+      setActionError(err.message || "Failed to register website");
+    }
+  };
+
+  const handleDeleteWebsite = async (websiteId: string, domain: string) => {
+    if (!window.confirm(`Are you sure you want to delete/unregister website "${domain}"?`)) {
+      return;
+    }
+    setDeletingId(websiteId);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await deleteWebsite(websiteId);
+      setActionSuccess(`Website "${domain}" unregistered.`);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to delete website");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleAddOrgMember = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMemberEmail) return;
-    addOrgMember(newMemberEmail, newMemberOrgRole);
-    setNewMemberEmail("");
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      addOrgMember(newMemberEmail, newMemberOrgRole);
+      setActionSuccess(`Member ${newMemberEmail} added to organization.`);
+      setNewMemberEmail("");
+    } catch (err: any) {
+      setActionError(err.message || "Failed to add member");
+    }
+  };
+
+  const handleRemoveOrgMember = async (memberId: string, email?: string) => {
+    if (!window.confirm(`Are you sure you want to remove member ${email || "user"} from this organization?`)) {
+      return;
+    }
+    setDeletingId(memberId);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await removeOrgMember(memberId);
+      setActionSuccess(`Member removed from organization.`);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to remove member");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleAddBrandMember = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMemberEmail) return;
-    addBrandMember(newMemberEmail, newMemberBrandRole);
-    setNewMemberEmail("");
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      addBrandMember(newMemberEmail, newMemberBrandRole);
+      setActionSuccess(`Member ${newMemberEmail} added to brand.`);
+      setNewMemberEmail("");
+    } catch (err: any) {
+      setActionError(err.message || "Failed to add brand member");
+    }
+  };
+
+  const handleRemoveBrandMember = async (memberId: string, email?: string) => {
+    if (!window.confirm(`Are you sure you want to remove member ${email || "user"} from this brand?`)) {
+      return;
+    }
+    setDeletingId(memberId);
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await removeBrandMember(memberId);
+      setActionSuccess(`Member removed from brand.`);
+    } catch (err: any) {
+      setActionError(err.message || "Failed to remove member");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const runRlsSecurityChecks = async () => {
@@ -177,8 +309,8 @@ export function SettingsView() {
     }
   };
 
-  const currentOrgBrands = brands.filter((b) => b.organizationId === currentOrg.id);
-  const currentBrandWebsites = websites.filter((w) => w.brandId === currentBrand.id);
+  const currentOrgBrands = (brands || []).filter((b) => b && currentOrg?.id && b.organizationId === currentOrg.id);
+  const currentBrandWebsites = (websites || []).filter((w) => w && currentBrand?.id && w.brandId === currentBrand.id);
 
   return (
     <div id="settings-view" className="p-8 max-w-5xl mx-auto space-y-6">
@@ -192,6 +324,26 @@ export function SettingsView() {
           User → Organization → Brand → Website hierarchy with database Row Level Security and role-based access control.
         </p>
       </div>
+
+      {actionError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between text-xs text-red-800">
+          <div className="flex items-center gap-2">
+            <XCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button onClick={() => setActionError(null)} className="text-red-500 hover:text-red-800 font-semibold">✕</button>
+        </div>
+      )}
+
+      {actionSuccess && (
+        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-xs text-emerald-800">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{actionSuccess}</span>
+          </div>
+          <button onClick={() => setActionSuccess(null)} className="text-emerald-500 hover:text-emerald-800 font-semibold">✕</button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex border-b border-neutral-200 gap-6 text-sm font-medium">
@@ -226,7 +378,7 @@ export function SettingsView() {
           }`}
         >
           <Globe className="w-4 h-4" />
-          <span>Websites ({currentBrand.name})</span>
+          <span>Websites ({currentBrand?.name || "No Brand"})</span>
         </button>
         <button
           onClick={() => setActiveTab("rls-verify")}
@@ -261,16 +413,16 @@ export function SettingsView() {
 
               <div className="p-3 bg-indigo-50/50 border border-indigo-200/70 rounded-lg space-y-1">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500">2. Organization (Tenant)</span>
-                <div className="font-semibold text-indigo-950 truncate">{currentOrg.name}</div>
-                <div className="text-indigo-600 font-mono text-[11px]">slug: {currentOrg.slug}</div>
-                <div className="text-[10px] text-indigo-400 font-mono">UUID: {currentOrg.id.slice(0, 8)}...</div>
+                <div className="font-semibold text-indigo-950 truncate">{currentOrg?.name || "No Organization"}</div>
+                <div className="text-indigo-600 font-mono text-[11px]">slug: {currentOrg?.slug || "none"}</div>
+                <div className="text-[10px] text-indigo-400 font-mono">UUID: {currentOrg?.id ? `${currentOrg.id.slice(0, 8)}...` : "Unset"}</div>
               </div>
 
               <div className="p-3 bg-indigo-50/50 border border-indigo-200/70 rounded-lg space-y-1">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-500">3. Brand (Context)</span>
-                <div className="font-semibold text-indigo-950 truncate">{currentBrand.name}</div>
-                <div className="text-indigo-600 text-[11px] truncate">{currentBrand.primaryDomain}</div>
-                <div className="text-[10px] text-indigo-400 font-mono">UUID: {currentBrand.id.slice(0, 8)}...</div>
+                <div className="font-semibold text-indigo-950 truncate">{currentBrand?.name || "No Brand"}</div>
+                <div className="text-indigo-600 text-[11px] truncate">{currentBrand?.primaryDomain || "No Domain"}</div>
+                <div className="text-[10px] text-indigo-400 font-mono">UUID: {currentBrand?.id ? `${currentBrand.id.slice(0, 8)}...` : "Unset"}</div>
               </div>
 
               <div className="p-3 bg-emerald-50/50 border border-emerald-200/70 rounded-lg space-y-1">
@@ -292,24 +444,38 @@ export function SettingsView() {
                 <span>Switch Organization</span>
               </h3>
               <div className="space-y-2">
-                {organizations.map((org) => (
-                  <button
+                {(organizations || []).map((org) => org && (
+                  <div
                     key={org.id}
-                    onClick={() => setCurrentOrg(org)}
-                    className={`w-full text-left p-3 rounded-lg border transition flex items-center justify-between text-xs ${
-                      org.id === currentOrg.id
+                    className={`w-full p-3 rounded-lg border transition flex items-center justify-between text-xs ${
+                      org.id === currentOrg?.id
                         ? "border-indigo-500 bg-indigo-50/50 text-indigo-900 font-medium"
                         : "border-neutral-200 hover:bg-neutral-50 text-neutral-700"
                     }`}
                   >
-                    <div>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentOrg(org)}
+                      className="grow text-left cursor-pointer"
+                    >
                       <div className="font-semibold text-neutral-800">{org.name}</div>
                       <div className="text-[11px] text-neutral-400">/{org.slug}</div>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      {org.id === currentOrg?.id && (
+                        <span className="text-[10px] bg-indigo-600 text-white px-2 py-0.5 rounded font-medium">Active</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteOrg(org.id, org.name)}
+                        disabled={deletingId === org.id}
+                        title="Delete Organization"
+                        className="p-1.5 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
-                    {org.id === currentOrg.id && (
-                      <span className="text-[10px] bg-indigo-600 text-white px-2 py-0.5 rounded font-medium">Active</span>
-                    )}
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -361,30 +527,43 @@ export function SettingsView() {
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-indigo-600" />
-                <span>Brands in {currentOrg.name}</span>
+                <span>Brands in {currentOrg?.name || "Organization"}</span>
               </h3>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {currentOrgBrands.map((b) => (
-                <button
+              {(currentOrgBrands || []).map((b) => b && (
+                <div
                   key={b.id}
-                  onClick={() => setCurrentBrand(b)}
-                  className={`text-left p-3 rounded-lg border transition text-xs space-y-1 ${
-                    b.id === currentBrand.id
+                  className={`p-3 rounded-lg border transition text-xs flex flex-col justify-between ${
+                    b.id === currentBrand?.id
                       ? "border-indigo-500 bg-indigo-50/50 text-indigo-900 font-medium"
                       : "border-neutral-200 hover:bg-neutral-50 text-neutral-700"
                   }`}
                 >
-                  <div className="font-semibold text-neutral-800 flex items-center justify-between">
-                    <span>{b.name}</span>
-                    {b.id === currentBrand.id && (
-                      <span className="text-[10px] bg-indigo-600 text-white px-1.5 py-0.2 rounded font-normal">Active</span>
-                    )}
+                  <div onClick={() => setCurrentBrand(b)} className="cursor-pointer space-y-1">
+                    <div className="font-semibold text-neutral-800 flex items-center justify-between">
+                      <span>{b.name}</span>
+                      {b.id === currentBrand?.id && (
+                        <span className="text-[10px] bg-indigo-600 text-white px-1.5 py-0.2 rounded font-normal">Active</span>
+                      )}
+                    </div>
+                    <div className="text-neutral-500 truncate">{b.primaryDomain}</div>
+                    <div className="text-[10px] text-neutral-400 font-mono">UUID: {b.id.slice(0, 8)}...</div>
                   </div>
-                  <div className="text-neutral-500 truncate">{b.primaryDomain}</div>
-                  <div className="text-[10px] text-neutral-400 font-mono">UUID: {b.id.slice(0, 8)}...</div>
-                </button>
+                  <div className="pt-2 mt-2 border-t border-neutral-100 flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteBrand(b.id, b.name)}
+                      disabled={deletingId === b.id}
+                      title="Delete Brand"
+                      className="text-neutral-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition flex items-center gap-1 text-[11px] cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
+                  </div>
+                </div>
               ))}
             </div>
 
@@ -477,7 +656,7 @@ export function SettingsView() {
             <div className="bg-white rounded-xl border border-neutral-200 p-6 space-y-4 shadow-xs">
               <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
                 <Users className="w-4 h-4 text-indigo-600" />
-                <span>Organization Members ({currentOrg.name})</span>
+                <span>Organization Members ({currentOrg?.name || "Organization"})</span>
               </h3>
               <div className="divide-y divide-neutral-100 text-xs">
                 {orgMembers.map((m) => (
@@ -486,17 +665,28 @@ export function SettingsView() {
                       <div className="font-medium text-neutral-800">{m.profile?.fullName || m.userId}</div>
                       <div className="text-neutral-500 text-[11px]">{m.profile?.email}</div>
                     </div>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[11px] font-medium capitalize ${
-                        m.role === "owner"
-                          ? "bg-purple-100 text-purple-800"
-                          : m.role === "admin"
-                          ? "bg-indigo-100 text-indigo-800"
-                          : "bg-neutral-100 text-neutral-700"
-                      }`}
-                    >
-                      {m.role}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium capitalize ${
+                          m.role === "owner"
+                            ? "bg-purple-100 text-purple-800"
+                            : m.role === "admin"
+                            ? "bg-indigo-100 text-indigo-800"
+                            : "bg-neutral-100 text-neutral-700"
+                        }`}
+                      >
+                        {m.role}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveOrgMember(m.id, m.profile?.email)}
+                        disabled={deletingId === m.id || currentUser.orgRole === "member"}
+                        title="Remove Member"
+                        className="p-1 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded transition disabled:opacity-30 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -536,7 +726,7 @@ export function SettingsView() {
             <div className="bg-white rounded-xl border border-neutral-200 p-6 space-y-4 shadow-xs">
               <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-indigo-600" />
-                <span>Brand Members ({currentBrand.name})</span>
+                <span>Brand Members ({currentBrand?.name || "Brand"})</span>
               </h3>
               <div className="divide-y divide-neutral-100 text-xs">
                 {brandMembers.map((m) => (
@@ -545,19 +735,30 @@ export function SettingsView() {
                       <div className="font-medium text-neutral-800">{m.profile?.fullName || m.userId}</div>
                       <div className="text-neutral-500 text-[11px]">{m.profile?.email}</div>
                     </div>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[11px] font-medium capitalize ${
-                        m.role === "strategist"
-                          ? "bg-indigo-100 text-indigo-800 font-semibold"
-                          : m.role === "writer"
-                          ? "bg-blue-100 text-blue-800"
-                          : m.role === "reviewer"
-                          ? "bg-emerald-100 text-emerald-800"
-                          : "bg-neutral-100 text-neutral-700"
-                      }`}
-                    >
-                      {m.role}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium capitalize ${
+                          m.role === "strategist"
+                            ? "bg-indigo-100 text-indigo-800 font-semibold"
+                            : m.role === "writer"
+                            ? "bg-blue-100 text-blue-800"
+                            : m.role === "reviewer"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-neutral-100 text-neutral-700"
+                        }`}
+                      >
+                        {m.role}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveBrandMember(m.id, m.profile?.email)}
+                        disabled={deletingId === m.id || (currentUser.brandRole !== "strategist" && currentUser.orgRole === "member")}
+                        title="Remove Member"
+                        className="p-1 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded transition disabled:opacity-30 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -605,7 +806,7 @@ export function SettingsView() {
           <div className="bg-white rounded-xl border border-neutral-200 p-6 space-y-4 shadow-xs">
             <h3 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
               <Globe className="w-4 h-4 text-indigo-600" />
-              <span>Registered Target Websites for Brand: {currentBrand.name}</span>
+              <span>Registered Target Websites for Brand: {currentBrand?.name || "Brand"}</span>
             </h3>
 
             <div className="divide-y divide-neutral-100 text-xs">
@@ -620,10 +821,20 @@ export function SettingsView() {
                         Sitemap: {site.sitemapUrl || "Auto-detecting /sitemap.xml"}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-3">
                       <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-medium capitalize">
                         {site.status}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteWebsite(site.id, site.domain)}
+                        disabled={deletingId === site.id}
+                        title="Unregister / Delete Website"
+                        className="px-2 py-1 text-red-600 hover:bg-red-50 border border-red-200 rounded transition flex items-center gap-1 font-medium cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete</span>
+                      </button>
                     </div>
                   </div>
                 ))
@@ -732,10 +943,10 @@ export function SettingsView() {
               <div>
                 <span className="text-indigo-950 font-semibold">Active Operational Context: </span>
                 <span className="text-indigo-800">
-                  {currentOrg.name} ({currentUser.orgRole}) → {currentBrand.name} ({currentUser.brandRole})
+                  {currentOrg?.name || "Org"} ({currentUser?.orgRole || "member"}) → {currentBrand?.name || "Brand"} ({currentUser?.brandRole || "viewer"})
                 </span>
               </div>
-              <div className="text-[11px] font-mono text-indigo-600">User: {currentUser.email}</div>
+              <div className="text-[11px] font-mono text-indigo-600">User: {currentUser?.email || "unknown"}</div>
             </div>
           </div>
 

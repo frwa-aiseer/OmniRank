@@ -26,19 +26,27 @@ async function getAuthHeaders(extraHeaders: Record<string, string> = {}): Promis
   };
 }
 
+async function handleResponse<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `HTTP ${res.status}: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export const brandBrainApi = {
   async getKnowledge(brandId: string, _userId?: string): Promise<BrandBrainKnowledge | null> {
-    try {
-      const headers = await getAuthHeaders();
-      const res = await fetch(`/api/brand-brain/${brandId}`, {
-        headers
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.knowledge;
-    } catch {
-      return null;
+    const headers = await getAuthHeaders();
+    const res = await fetch(`/api/brand-brain/${brandId}`, {
+      headers
+    });
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `Failed to fetch brand brain (${res.status})`);
     }
+    const data = await res.json();
+    return data.knowledge;
   },
 
   async saveProfile(brandId: string, profile: any, _userId?: string) {
@@ -48,13 +56,13 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(profile)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
   async getEvidence(brandId: string, _userId?: string) {
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/brand-brain/${brandId}/evidence`, { headers });
-    return res.json();
+    return handleResponse(res);
   },
 
   async verifyClaim(brandId: string, claimId: string, status: "unverified" | "verified" | "disputed" | "rejected", _userId?: string) {
@@ -64,7 +72,7 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify({ status })
     });
-    return res.json();
+    return handleResponse(res);
   },
 
   async saveProduct(brandId: string, product: Partial<BrandProduct>, _userId?: string) {
@@ -78,16 +86,16 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(product)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
-  async toggleArchiveProduct(brandId: string, productId: string, _userId?: string) {
+  async toggleArchiveProduct(brandId: string, productId: string, _userId?: string): Promise<{ product: BrandProduct }> {
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/brand-brain/${brandId}/products/${productId}/archive`, {
       method: "POST",
       headers
     });
-    return res.json();
+    return handleResponse<{ product: BrandProduct }>(res);
   },
 
   async saveAudience(brandId: string, audience: Partial<BrandAudience>, _userId?: string) {
@@ -101,16 +109,16 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(audience)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
-  async toggleArchiveAudience(brandId: string, audienceId: string, _userId?: string) {
+  async toggleArchiveAudience(brandId: string, audienceId: string, _userId?: string): Promise<{ audience: BrandAudience }> {
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/brand-brain/${brandId}/audiences/${audienceId}/archive`, {
       method: "POST",
       headers
     });
-    return res.json();
+    return handleResponse<{ audience: BrandAudience }>(res);
   },
 
   async saveVoiceProfile(brandId: string, profile: Partial<BrandVoiceProfile>, _userId?: string) {
@@ -120,7 +128,7 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(profile)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
   async addVoiceExample(brandId: string, example: Partial<BrandVoiceExample>, _userId?: string) {
@@ -130,7 +138,7 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(example)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
   async deleteVoiceExample(brandId: string, exampleId: string, _userId?: string) {
@@ -139,7 +147,7 @@ export const brandBrainApi = {
       method: "DELETE",
       headers
     });
-    return res.json();
+    return handleResponse(res);
   },
 
   async saveTerminology(brandId: string, term: Partial<BrandTerminology>, _userId?: string) {
@@ -153,16 +161,16 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(term)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
-  async toggleArchiveTerminology(brandId: string, termId: string, _userId?: string) {
+  async toggleArchiveTerminology(brandId: string, termId: string, _userId?: string): Promise<{ term: BrandTerminology }> {
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/brand-brain/${brandId}/terminology/${termId}/archive`, {
       method: "POST",
       headers
     });
-    return res.json();
+    return handleResponse<{ term: BrandTerminology }>(res);
   },
 
   async savePolicy(brandId: string, policy: Partial<BrandPolicy>, _userId?: string) {
@@ -176,16 +184,16 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(policy)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
-  async toggleArchivePolicy(brandId: string, policyId: string, _userId?: string) {
+  async toggleArchivePolicy(brandId: string, policyId: string, _userId?: string): Promise<{ policy: BrandPolicy }> {
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/brand-brain/${brandId}/policies/${policyId}/archive`, {
       method: "POST",
       headers
     });
-    return res.json();
+    return handleResponse<{ policy: BrandPolicy }>(res);
   },
 
   async saveCompetitor(brandId: string, competitor: Partial<BrandCompetitor>, _userId?: string) {
@@ -199,15 +207,15 @@ export const brandBrainApi = {
       headers,
       body: JSON.stringify(competitor)
     });
-    return res.json();
+    return handleResponse(res);
   },
 
-  async toggleArchiveCompetitor(brandId: string, competitorId: string, _userId?: string) {
+  async toggleArchiveCompetitor(brandId: string, competitorId: string, _userId?: string): Promise<{ competitor: BrandCompetitor }> {
     const headers = await getAuthHeaders();
     const res = await fetch(`/api/brand-brain/${brandId}/competitors/${competitorId}/archive`, {
       method: "POST",
       headers
     });
-    return res.json();
+    return handleResponse<{ competitor: BrandCompetitor }>(res);
   }
 };

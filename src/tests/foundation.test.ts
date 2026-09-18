@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { cn } from "../lib/utils.ts";
-import { clientEnv, sanitizeSupabaseUrl } from "../lib/env.ts";
+import { clientEnv, sanitizeSupabaseUrl, sanitizeApiKey } from "../lib/env.ts";
 import { supabase } from "../lib/supabase/client.ts";
 import { r2Storage } from "../server/storage/r2.ts";
 import { inngest } from "../server/inngest/client.ts";
@@ -20,6 +20,12 @@ describe("OR-P01 Foundation & Environment Tests", () => {
     expect(sanitizeSupabaseUrl("https://abc.supabase.co/rest/v1/")).toBe("https://abc.supabase.co");
     expect(sanitizeSupabaseUrl("https://abc.supabase.co/")).toBe("https://abc.supabase.co");
     expect(sanitizeSupabaseUrl("https://abc.supabase.co")).toBe("https://abc.supabase.co");
+    // Prefix assignment and quote resilience
+    expect(sanitizeSupabaseUrl("VITE_SUPABASE_URL=https://abc.supabase.co")).toBe("https://abc.supabase.co");
+    expect(sanitizeSupabaseUrl('"https://abc.supabase.co"')).toBe("https://abc.supabase.co");
+    expect(sanitizeSupabaseUrl("'https://abc.supabase.co/'")).toBe("https://abc.supabase.co");
+    expect(sanitizeApiKey("VITE_SUPABASE_PUBLISHABLE_KEY=abc-123")).toBe("abc-123");
+    expect(sanitizeApiKey('"abc-123"')).toBe("abc-123");
   });
 
   it("should sanitize Supabase URL and validate publishable key on client without leaking secret keys", () => {

@@ -31,6 +31,8 @@ import {
   InMemoryBrandBrainRepository
 } from "./repository.ts";
 import { tenancyRepo, TenancyAuthorizationError } from "../auth/tenancy.ts";
+import { isLiveSupabaseConfigured } from "../supabase/client.ts";
+import { getServerEnv } from "../env.ts";
 
 export class BrandBrainIngestionService {
   private repo: IBrandBrainRepository;
@@ -50,22 +52,36 @@ export class BrandBrainIngestionService {
   ) {
     this.embeddingProvider = embeddingProvider;
     this.repo = repository || createBrandBrainRepository();
-    this.seedDefaultKnowledge();
+    const env = getServerEnv();
+    if (!isLiveSupabaseConfigured() && (env.NODE_ENV === "test" || env.DEMO_MODE)) {
+      this.seedDefaultKnowledge();
+    }
   }
 
   /**
    * Resolves and validates the organization ID for a given brand.
-   * Throws TenancyAuthorizationError on cross-tenant mismatch.
+   * Throws TenancyAuthorizationError on cross-tenant mismatch or unknown brand.
+   * Never falls back to arbitrary demo tenants in production.
    */
   private resolveTenantOrganization(brandId: string, requestedOrgId?: string): string {
-    const actualOrgId = tenancyRepo.resolveBrandOrganization(brandId);
-    if (requestedOrgId && actualOrgId && requestedOrgId !== actualOrgId) {
+    const actualOrgId = tenancyRepo.resolveBrandOrganization(brandId, requestedOrgId);
+    if (!actualOrgId) {
+      const env = getServerEnv();
+      if ((env.NODE_ENV === "test" || env.DEMO_MODE) && requestedOrgId) {
+        return requestedOrgId;
+      }
+      throw new TenancyAuthorizationError(
+        `Tenant resolution failed: Brand ${brandId} does not exist or has no associated organization. Never guessing a tenant.`,
+        "TENANT_NOT_FOUND"
+      );
+    }
+    if (requestedOrgId && requestedOrgId !== actualOrgId) {
       throw new TenancyAuthorizationError(
         `Cross-tenant violation: Brand ${brandId} belongs to organization ${actualOrgId}, not ${requestedOrgId}`,
         "FORBIDDEN"
       );
     }
-    return actualOrgId || requestedOrgId || "org-001";
+    return actualOrgId;
   }
 
   /**
@@ -621,7 +637,6 @@ export class BrandBrainIngestionService {
       updatedAt: new Date("2026-01-15").toISOString()
     };
     this.localSources.set(srcId1, source1);
-    this.repo.saveSource(source1).catch(() => {});
 
     const doc1: KnowledgeDocument = {
       id: docId1,
@@ -645,7 +660,6 @@ export class BrandBrainIngestionService {
       updatedAt: new Date("2026-01-15").toISOString()
     };
     this.localDocuments.set(docId1, doc1);
-    this.repo.saveDocument(doc1).catch(() => {});
 
     const evSrcId = "evs-001";
     const evSource: EvidenceSource = {
@@ -661,7 +675,6 @@ export class BrandBrainIngestionService {
       updatedAt: new Date("2026-01-15").toISOString()
     };
     this.localEvidenceSources.set(evSrcId, evSource);
-    this.repo.saveEvidenceSource(evSource).catch(() => {});
 
     const claim1: EvidenceClaim = {
       id: "clm-001",
@@ -690,7 +703,6 @@ export class BrandBrainIngestionService {
       updatedAt: new Date("2026-01-15").toISOString()
     };
     this.localEvidenceClaims.set("clm-001", claim1);
-    this.repo.saveEvidenceClaims([claim1]).catch(() => {});
   }
 }
 

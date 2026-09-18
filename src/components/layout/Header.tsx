@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldCheck, User, Building, Sparkles, ChevronDown, Plus, Globe } from "lucide-react";
+import { ShieldCheck, User, Building, Sparkles, ChevronDown, Plus, Globe, LogOut } from "lucide-react";
 import { useApp } from "../../context/AppContext.tsx";
 
 export function Header() {
@@ -14,12 +14,14 @@ export function Header() {
     currentWebsite,
     currentUser,
     setCurrentView,
+    isLiveSupabase,
+    signOut,
   } = useApp();
 
   const [orgDropdownOpen, setOrgDropdownOpen] = useState(false);
   const [brandDropdownOpen, setBrandDropdownOpen] = useState(false);
 
-  const orgBrands = brands.filter((b) => b.organizationId === currentOrg.id);
+  const orgBrands = (brands || []).filter((b) => b && currentOrg?.id && b.organizationId === currentOrg.id);
 
   return (
     <header
@@ -39,7 +41,7 @@ export function Header() {
             className="flex items-center gap-1.5 font-medium text-neutral-800 hover:bg-neutral-100 px-2 py-1 rounded transition"
           >
             <Building className="w-3.5 h-3.5 text-neutral-500" />
-            <span id="header-org-name">{currentOrg.name}</span>
+            <span id="header-org-name">{currentOrg?.name || "No Organization"}</span>
             <ChevronDown className="w-3 h-3 text-neutral-400" />
           </button>
 
@@ -51,7 +53,7 @@ export function Header() {
               <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
                 Organizations
               </div>
-              {organizations.map((org) => (
+              {(organizations || []).map((org) => org && (
                 <button
                   key={org.id}
                   onClick={() => {
@@ -59,11 +61,11 @@ export function Header() {
                     setOrgDropdownOpen(false);
                   }}
                   className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-neutral-50 ${
-                    org.id === currentOrg.id ? "font-semibold text-indigo-600 bg-indigo-50/50" : "text-neutral-700"
+                    org.id === currentOrg?.id ? "font-semibold text-indigo-600 bg-indigo-50/50" : "text-neutral-700"
                   }`}
                 >
                   <span className="truncate">{org.name}</span>
-                  {org.id === currentOrg.id && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded">Active</span>}
+                  {org.id === currentOrg?.id && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded">Active</span>}
                 </button>
               ))}
               <div className="border-t border-neutral-100 mt-1 pt-1">
@@ -95,7 +97,7 @@ export function Header() {
             className="flex items-center gap-1.5 font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100/70 px-2.5 py-1 rounded border border-indigo-100 transition"
           >
             <Sparkles className="w-3 h-3 text-indigo-500" />
-            <span id="header-brand-name">{currentBrand.name}</span>
+            <span id="header-brand-name">{currentBrand?.name || "No Brand"}</span>
             <ChevronDown className="w-3 h-3 text-indigo-400" />
           </button>
 
@@ -105,9 +107,9 @@ export function Header() {
               className="absolute left-0 mt-1 w-56 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 z-50 text-xs"
             >
               <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-400">
-                Brands ({currentOrg.name})
+                Brands ({currentOrg?.name || "No Organization"})
               </div>
-              {orgBrands.map((b) => (
+              {(orgBrands || []).map((b) => b && (
                 <button
                   key={b.id}
                   onClick={() => {
@@ -115,11 +117,11 @@ export function Header() {
                     setBrandDropdownOpen(false);
                   }}
                   className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-neutral-50 ${
-                    b.id === currentBrand.id ? "font-semibold text-indigo-600 bg-indigo-50/50" : "text-neutral-700"
+                    b.id === currentBrand?.id ? "font-semibold text-indigo-600 bg-indigo-50/50" : "text-neutral-700"
                   }`}
                 >
                   <span className="truncate">{b.name}</span>
-                  {b.id === currentBrand.id && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded">Active</span>}
+                  {b.id === currentBrand?.id && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded">Active</span>}
                 </button>
               ))}
               <div className="border-t border-neutral-100 mt-1 pt-1">
@@ -169,12 +171,23 @@ export function Header() {
             <User className="w-3.5 h-3.5" />
           </div>
           <div className="hidden md:block">
-            <div className="font-medium text-neutral-800 leading-tight">{currentUser.fullName}</div>
+            <div className="font-medium text-neutral-800 leading-tight">{currentUser?.fullName || "User"}</div>
             <div className="text-[10px] text-neutral-500 capitalize">
-              {currentUser.orgRole} · {currentUser.brandRole}
+              {currentUser?.orgRole || "member"} · {currentUser?.brandRole || "viewer"}
             </div>
           </div>
         </button>
+
+        {isLiveSupabase && (
+          <button
+            id="user-signout-btn"
+            onClick={() => signOut()}
+            title="Sign Out"
+            className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-neutral-100 rounded transition"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </header>
   );

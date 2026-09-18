@@ -58,7 +58,7 @@ export function BrandBrainView() {
   const [loading, setLoading] = useState(true);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
 
-  const brandId = currentBrand?.id || "brand-001";
+  const brandId = currentBrand?.id && currentBrand.id !== "00000000-0000-0000-0000-000000000000" ? currentBrand.id : "";
   const user = {
     id: currentUser.id,
     name: currentUser.fullName
@@ -74,6 +74,50 @@ export function BrandBrainView() {
 
   // Load Brand Brain Data
   const loadKnowledge = async () => {
+    if (!brandId) {
+      setKnowledge({
+        profile: {
+          id: "",
+          brandId: "",
+          mission: "",
+          positioningStatement: "",
+          targetMarket: "",
+          valueProposition: "",
+          toneKeywords: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        },
+        products: [],
+        audiences: [],
+        voiceProfile: {
+          id: "",
+          brandId: "",
+          archetype: "Professional Guide",
+          formalityScore: 3,
+          enthusiasmScore: 3,
+          technicalDepthScore: 3,
+          humorScore: 2,
+          readingGradeLevel: "10th Grade",
+          primaryToneTraits: ["Authoritative", "Clear"],
+          styleGuidelines: "",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        },
+        voiceExamples: [],
+        terminology: [],
+        policies: [],
+        competitors: [],
+        sources: [],
+        documents: [],
+        evidenceClaims: [],
+        evidenceSources: [],
+        recentAuditLogs: [],
+        completenessScore: 0
+      });
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       const data = await brandBrainApi.getKnowledge(brandId, user.id);

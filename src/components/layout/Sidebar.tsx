@@ -74,7 +74,7 @@ export function Sidebar() {
           </div>
           <div>
             <h1 className="font-semibold text-sm tracking-tight text-white leading-tight">OmniRank</h1>
-            <p className="text-[11px] text-neutral-400 truncate max-w-[140px]">{currentBrand.name}</p>
+            <p className="text-[11px] text-neutral-400 truncate max-w-[140px]">{currentBrand?.name || "OmniRank Workspace"}</p>
           </div>
         </div>
 

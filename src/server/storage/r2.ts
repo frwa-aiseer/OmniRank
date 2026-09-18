@@ -5,6 +5,7 @@ import {
   DeleteObjectCommand,
   HeadBucketCommand
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getServerEnv } from "../env.ts";
 
 export interface StorageUploadResult {
@@ -77,6 +78,13 @@ export class LocalDevStorageAdapter {
 
   async delete(key: string): Promise<boolean> {
     return this.store.delete(key);
+  }
+
+  async getSignedDownloadUrl(key: string, _expiresInSeconds = 3600): Promise<string> {
+    if (!this.store.has(key)) {
+      throw new Error(`[LocalDevStorage] Object not found for key: ${key}`);
+    }
+    return `/api/storage/local-file/${encodeURIComponent(key)}`;
   }
 
   has(key: string): boolean {
@@ -243,6 +251,22 @@ export class R2StorageService {
       return true;
     } catch (err: any) {
       throw new Error(`Failed to delete object from Cloudflare R2: ${err.message}`);
+    }
+  }
+
+  async getSignedDownloadUrl(key: string, expiresInSeconds = 3600): Promise<string> {
+    if (!this.isConfigured() || !this.s3Client) {
+      return await this.localAdapter.getSignedDownloadUrl(key, expiresInSeconds);
+    }
+
+    try {
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key
+      });
+      return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+    } catch (err: any) {
+      throw new Error(`Failed to generate signed URL for Cloudflare R2 object: ${err.message}`);
     }
   }
 }

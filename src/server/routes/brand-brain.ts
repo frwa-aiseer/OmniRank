@@ -16,14 +16,24 @@ const router = Router();
 router.use(authenticateRequest);
 
 // Helper to extract authenticated user and verify tenancy/brand membership
-function resolveAuthContext(req: Request, brandId: string) {
+async function resolveAuthContext(req: Request, brandId: string) {
   const ctx = req.securityContext;
   if (!ctx || !ctx.isAuthenticated || !ctx.userId) {
     return { error: "Authentication required", status: 401, user: null, orgRole: null, brandRole: null };
   }
 
   const userId = ctx.userId;
-  const isMember = tenancyRepo.isBrandMember(brandId, userId);
+  if (ctx.isServiceRole) {
+    return {
+      error: null,
+      status: 200,
+      user: { id: userId, name: "Service Role" },
+      orgRole: "admin" as OrgRole,
+      brandRole: "strategist" as BrandRole,
+    };
+  }
+
+  const isMember = await tenancyRepo.isBrandMemberAsync(brandId, userId, req.token);
   if (!isMember) {
     return { error: "Forbidden: Not authorized for this brand", status: 403, user: null, orgRole: null, brandRole: null };
   }
@@ -34,7 +44,7 @@ function resolveAuthContext(req: Request, brandId: string) {
   };
 
   try {
-    const brand = tenancyRepo.getBrandById(ctx, brandId);
+    const brand = await tenancyRepo.getBrandByIdAsync(ctx, brandId, req.token);
     const orgRole: OrgRole = brand ? (tenancyRepo.getOrgRole(brand.organizationId, userId) || "member") : "member";
     const brandRole: BrandRole = tenancyRepo.getBrandRole(brandId, userId) || "viewer";
     return { error: null, status: 200, user, orgRole, brandRole };
@@ -44,31 +54,35 @@ function resolveAuthContext(req: Request, brandId: string) {
 }
 
 // 1. Get Brand Brain Core Knowledge
-router.get("/:brandId", (req: Request, res: Response) => {
+router.get("/:brandId", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error) {
     res.status(auth.status).json({ error: auth.error });
     return;
   }
 
-  const knowledge = brandBrainRepo.getBrandBrain(brandId);
-  res.json({
-    brandId,
-    knowledge,
-    userPermissions: {
-      canEditStrategist: brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist"]),
-      canEditWriter: brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"]),
-      orgRole: auth.orgRole,
-      brandRole: auth.brandRole
-    }
-  });
+  try {
+    const knowledge = await brandBrainRepo.getBrandBrainAsync(brandId, req.token);
+    res.json({
+      brandId,
+      knowledge,
+      userPermissions: {
+        canEditStrategist: brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist"]),
+        canEditWriter: brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"]),
+        orgRole: auth.orgRole,
+        brandRole: auth.brandRole
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch brand brain" });
+  }
 });
 
 // 2. Update Profile (Strategist only)
-router.put("/:brandId/profile", (req: Request, res: Response) => {
+router.put("/:brandId/profile", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -79,14 +93,18 @@ router.put("/:brandId/profile", (req: Request, res: Response) => {
     return;
   }
 
-  const updated = brandBrainRepo.updateProfile(brandId, req.body, auth.user);
-  res.json({ profile: updated });
+  try {
+    const updated = await brandBrainRepo.updateProfileAsync(brandId, req.body, auth.user, req.token);
+    res.json({ profile: updated });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to update profile" });
+  }
 });
 
 // 3. Products & Services (Strategist & Writer)
-router.post("/:brandId/products", (req: Request, res: Response) => {
+router.post("/:brandId/products", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -97,13 +115,17 @@ router.post("/:brandId/products", (req: Request, res: Response) => {
     return;
   }
 
-  const product = brandBrainRepo.createProduct(brandId, req.body, auth.user);
-  res.status(201).json({ product });
+  try {
+    const product = await brandBrainRepo.createProductAsync(brandId, req.body, auth.user, req.token);
+    res.status(201).json({ product });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create product" });
+  }
 });
 
-router.put("/:brandId/products/:productId", (req: Request, res: Response) => {
+router.put("/:brandId/products/:productId", async (req: Request, res: Response) => {
   const { brandId, productId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -115,16 +137,16 @@ router.put("/:brandId/products/:productId", (req: Request, res: Response) => {
   }
 
   try {
-    const product = brandBrainRepo.updateProduct(brandId, productId, req.body, auth.user);
+    const product = await brandBrainRepo.updateProductAsync(brandId, productId, req.body, auth.user, req.token);
     res.json({ product });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
   }
 });
 
-router.post("/:brandId/products/:productId/archive", (req: Request, res: Response) => {
+router.post("/:brandId/products/:productId/archive", async (req: Request, res: Response) => {
   const { brandId, productId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -136,7 +158,7 @@ router.post("/:brandId/products/:productId/archive", (req: Request, res: Respons
   }
 
   try {
-    const product = brandBrainRepo.toggleArchiveProduct(brandId, productId, auth.user);
+    const product = await brandBrainRepo.toggleArchiveProductAsync(brandId, productId, auth.user, req.token);
     res.json({ product });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
@@ -144,9 +166,9 @@ router.post("/:brandId/products/:productId/archive", (req: Request, res: Respons
 });
 
 // 4. Audiences (Strategist only)
-router.post("/:brandId/audiences", (req: Request, res: Response) => {
+router.post("/:brandId/audiences", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -157,13 +179,17 @@ router.post("/:brandId/audiences", (req: Request, res: Response) => {
     return;
   }
 
-  const audience = brandBrainRepo.createAudience(brandId, req.body, auth.user);
-  res.status(201).json({ audience });
+  try {
+    const audience = await brandBrainRepo.createAudienceAsync(brandId, req.body, auth.user, req.token);
+    res.status(201).json({ audience });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create audience" });
+  }
 });
 
-router.put("/:brandId/audiences/:audienceId", (req: Request, res: Response) => {
+router.put("/:brandId/audiences/:audienceId", async (req: Request, res: Response) => {
   const { brandId, audienceId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -175,16 +201,16 @@ router.put("/:brandId/audiences/:audienceId", (req: Request, res: Response) => {
   }
 
   try {
-    const audience = brandBrainRepo.updateAudience(brandId, audienceId, req.body, auth.user);
+    const audience = await brandBrainRepo.updateAudienceAsync(brandId, audienceId, req.body, auth.user, req.token);
     res.json({ audience });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
   }
 });
 
-router.post("/:brandId/audiences/:audienceId/archive", (req: Request, res: Response) => {
+router.post("/:brandId/audiences/:audienceId/archive", async (req: Request, res: Response) => {
   const { brandId, audienceId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -196,7 +222,7 @@ router.post("/:brandId/audiences/:audienceId/archive", (req: Request, res: Respo
   }
 
   try {
-    const audience = brandBrainRepo.toggleArchiveAudience(brandId, audienceId, auth.user);
+    const audience = await brandBrainRepo.toggleArchiveAudienceAsync(brandId, audienceId, auth.user, req.token);
     res.json({ audience });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
@@ -204,9 +230,9 @@ router.post("/:brandId/audiences/:audienceId/archive", (req: Request, res: Respo
 });
 
 // 5. Voice Profile & Examples
-router.put("/:brandId/voice", (req: Request, res: Response) => {
+router.put("/:brandId/voice", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -217,13 +243,17 @@ router.put("/:brandId/voice", (req: Request, res: Response) => {
     return;
   }
 
-  const voiceProfile = brandBrainRepo.updateVoiceProfile(brandId, req.body, auth.user);
-  res.json({ voiceProfile });
+  try {
+    const voiceProfile = await brandBrainRepo.updateVoiceProfileAsync(brandId, req.body, auth.user, req.token);
+    res.json({ voiceProfile });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to update voice profile" });
+  }
 });
 
-router.post(["/:brandId/voice/examples", "/:brandId/voice-examples"], (req: Request, res: Response) => {
+router.post(["/:brandId/voice/examples", "/:brandId/voice-examples"], async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -234,13 +264,17 @@ router.post(["/:brandId/voice/examples", "/:brandId/voice-examples"], (req: Requ
     return;
   }
 
-  const example = brandBrainRepo.createVoiceExample(brandId, req.body, auth.user);
-  res.status(201).json({ example });
+  try {
+    const example = await brandBrainRepo.createVoiceExampleAsync(brandId, req.body, auth.user, req.token);
+    res.status(201).json({ example });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create voice example" });
+  }
 });
 
-router.delete(["/:brandId/voice/examples/:exampleId", "/:brandId/voice-examples/:exampleId"], (req: Request, res: Response) => {
+router.delete(["/:brandId/voice/examples/:exampleId", "/:brandId/voice-examples/:exampleId"], async (req: Request, res: Response) => {
   const { brandId, exampleId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -251,14 +285,18 @@ router.delete(["/:brandId/voice/examples/:exampleId", "/:brandId/voice-examples/
     return;
   }
 
-  const success = brandBrainRepo.deleteVoiceExample(brandId, exampleId, auth.user);
-  res.json({ success });
+  try {
+    const success = await brandBrainRepo.deleteVoiceExampleAsync(brandId, exampleId, auth.user, req.token);
+    res.json({ success });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete voice example" });
+  }
 });
 
 // 6. Terminology
-router.post("/:brandId/terminology", (req: Request, res: Response) => {
+router.post("/:brandId/terminology", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -269,56 +307,39 @@ router.post("/:brandId/terminology", (req: Request, res: Response) => {
     return;
   }
 
-  const term = brandBrainRepo.createTerminology(brandId, req.body, auth.user);
-  res.status(201).json({ term });
-});
-
-router.put("/:brandId/terminology/:termId", (req: Request, res: Response) => {
-  const { brandId, termId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
-  if (auth.error || !auth.user) {
-    res.status(auth.status).json({ error: auth.error });
-    return;
-  }
-
-  if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"])) {
-    res.status(403).json({ error: "Permission denied to update terminology" });
-    return;
-  }
-
   try {
-    const term = brandBrainRepo.updateTerminology(brandId, termId, req.body, auth.user);
-    res.json({ term });
+    const term = await brandBrainRepo.createTerminologyAsync(brandId, req.body, auth.user, req.token);
+    res.status(201).json({ term });
   } catch (err: any) {
-    res.status(404).json({ error: err.message });
+    res.status(500).json({ error: err.message || "Failed to create terminology" });
   }
 });
 
-router.post("/:brandId/terminology/:termId/archive", (req: Request, res: Response) => {
+router.delete("/:brandId/terminology/:termId", async (req: Request, res: Response) => {
   const { brandId, termId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
   }
 
   if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"])) {
-    res.status(403).json({ error: "Permission denied to archive terminology" });
+    res.status(403).json({ error: "Permission denied to delete terminology" });
     return;
   }
 
   try {
-    const term = brandBrainRepo.toggleArchiveTerminology(brandId, termId, auth.user);
-    res.json({ term });
+    const success = await brandBrainRepo.deleteTerminologyAsync(brandId, termId, auth.user, req.token);
+    res.json({ success });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
   }
 });
 
 // 7. Policies (suggestion, warning, blocking)
-router.post("/:brandId/policies", (req: Request, res: Response) => {
+router.post("/:brandId/policies", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -329,13 +350,17 @@ router.post("/:brandId/policies", (req: Request, res: Response) => {
     return;
   }
 
-  const policy = brandBrainRepo.createPolicy(brandId, req.body, auth.user);
-  res.status(201).json({ policy });
+  try {
+    const policy = await brandBrainRepo.createPolicyAsync(brandId, req.body, auth.user, req.token);
+    res.status(201).json({ policy });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create policy" });
+  }
 });
 
-router.put("/:brandId/policies/:policyId", (req: Request, res: Response) => {
+router.put("/:brandId/policies/:policyId", async (req: Request, res: Response) => {
   const { brandId, policyId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -347,16 +372,16 @@ router.put("/:brandId/policies/:policyId", (req: Request, res: Response) => {
   }
 
   try {
-    const policy = brandBrainRepo.updatePolicy(brandId, policyId, req.body, auth.user);
+    const policy = await brandBrainRepo.updatePolicyAsync(brandId, policyId, req.body, auth.user, req.token);
     res.json({ policy });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
   }
 });
 
-router.post("/:brandId/policies/:policyId/archive", (req: Request, res: Response) => {
+router.post("/:brandId/policies/:policyId/archive", async (req: Request, res: Response) => {
   const { brandId, policyId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -368,7 +393,7 @@ router.post("/:brandId/policies/:policyId/archive", (req: Request, res: Response
   }
 
   try {
-    const policy = brandBrainRepo.toggleArchivePolicy(brandId, policyId, auth.user);
+    const policy = await brandBrainRepo.toggleArchivePolicyAsync(brandId, policyId, auth.user, req.token);
     res.json({ policy });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
@@ -376,9 +401,9 @@ router.post("/:brandId/policies/:policyId/archive", (req: Request, res: Response
 });
 
 // 8. Competitors
-router.post("/:brandId/competitors", (req: Request, res: Response) => {
+router.post("/:brandId/competitors", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -389,13 +414,17 @@ router.post("/:brandId/competitors", (req: Request, res: Response) => {
     return;
   }
 
-  const competitor = brandBrainRepo.createCompetitor(brandId, req.body, auth.user);
-  res.status(201).json({ competitor });
+  try {
+    const competitor = await brandBrainRepo.createCompetitorAsync(brandId, req.body, auth.user, req.token);
+    res.status(201).json({ competitor });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create competitor" });
+  }
 });
 
-router.put("/:brandId/competitors/:competitorId", (req: Request, res: Response) => {
+router.put("/:brandId/competitors/:competitorId", async (req: Request, res: Response) => {
   const { brandId, competitorId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -407,16 +436,16 @@ router.put("/:brandId/competitors/:competitorId", (req: Request, res: Response) 
   }
 
   try {
-    const competitor = brandBrainRepo.updateCompetitor(brandId, competitorId, req.body, auth.user);
+    const competitor = await brandBrainRepo.updateCompetitorAsync(brandId, competitorId, req.body, auth.user, req.token);
     res.json({ competitor });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
   }
 });
 
-router.post("/:brandId/competitors/:competitorId/archive", (req: Request, res: Response) => {
+router.post("/:brandId/competitors/:competitorId/archive", async (req: Request, res: Response) => {
   const { brandId, competitorId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -428,7 +457,7 @@ router.post("/:brandId/competitors/:competitorId/archive", (req: Request, res: R
   }
 
   try {
-    const competitor = brandBrainRepo.toggleArchiveCompetitor(brandId, competitorId, auth.user);
+    const competitor = await brandBrainRepo.toggleArchiveCompetitorAsync(brandId, competitorId, auth.user, req.token);
     res.json({ competitor });
   } catch (err: any) {
     res.status(404).json({ error: err.message });
@@ -442,7 +471,7 @@ router.post("/:brandId/competitors/:competitorId/archive", (req: Request, res: R
 // Multipart Binary File Upload (PDF, DOCX, XLSX, CSV, MD, TXT, HTML)
 router.post("/:brandId/upload", upload.single("file"), async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -485,20 +514,20 @@ router.post("/:brandId/upload", upload.single("file"), async (req: Request, res:
       auth.user
     );
 
-    brandBrainRepo.logAudit({
+    await brandBrainRepo.logAuditAsync(
       brandId,
-      userId: auth.user.id,
-      userName: auth.user.name,
-      entityType: "profile",
-      entityId: result.document.id,
-      action: "create",
-      summary: `Uploaded binary file '${fileName}' (${result.chunks.length} chunks, ${result.evidenceClaims.length} claims).`,
-      details: {
+      auth.user,
+      "profile",
+      result.document.id,
+      "create",
+      `Uploaded binary file '${fileName}' (${result.chunks.length} chunks, ${result.evidenceClaims.length} claims).`,
+      {
         isDuplicate: result.isDuplicate,
         fileType,
         fileSizeBytes: req.file.size
-      }
-    });
+      },
+      req.token
+    );
 
     res.json(result);
   } catch (err: any) {
@@ -509,7 +538,7 @@ router.post("/:brandId/upload", upload.single("file"), async (req: Request, res:
 // Ingest Content (File upload, website crawl, manual note, spreadsheet)
 router.post("/:brandId/ingest", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -554,22 +583,21 @@ router.post("/:brandId/ingest", async (req: Request, res: Response) => {
       metadata
     }, auth.user);
 
-    // Record audit log
-    brandBrainRepo.logAudit({
+    await brandBrainRepo.logAuditAsync(
       brandId,
-      userId: auth.user.id,
-      userName: auth.user.name,
-      entityType: "profile",
-      entityId: result.document.id,
-      action: "create",
-      summary: `Ingested document '${result.document.title}' (${result.chunks.length} chunks, ${result.evidenceClaims.length} evidence candidates).`,
-      details: {
+      auth.user,
+      "profile",
+      result.document.id,
+      "create",
+      `Ingested document '${result.document.title}' (${result.chunks.length} chunks, ${result.evidenceClaims.length} evidence candidates).`,
+      {
         isDuplicate: result.isDuplicate,
         hasUntrustedDirectives: result.document.hasUntrustedDirectives,
         trustLevel: result.document.trustLevel,
         classification: result.document.classification
-      }
-    });
+      },
+      req.token
+    );
 
     res.json(result);
   } catch (err: any) {
@@ -580,7 +608,7 @@ router.post("/:brandId/ingest", async (req: Request, res: Response) => {
 // Semantic Vector Search with Brand Isolation Guarantee
 router.post("/:brandId/search", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -607,38 +635,46 @@ router.post("/:brandId/search", async (req: Request, res: Response) => {
   }
 });
 
-// Get Knowledge Sources
+// Get Knowledge Sources (Database-backed)
 router.get("/:brandId/sources", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error) {
     res.status(auth.status).json({ error: auth.error });
     return;
   }
 
-  const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-  const sources = brandBrainIngestion.getSources(brandId);
-  res.json({ sources });
+  try {
+    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
+    const sources = await brandBrainIngestion.getSourcesAsync(brandId);
+    res.json({ sources });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch sources" });
+  }
 });
 
-// Get Knowledge Documents
+// Get Knowledge Documents (Database-backed)
 router.get("/:brandId/documents", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error) {
     res.status(auth.status).json({ error: auth.error });
     return;
   }
 
-  const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-  const documents = brandBrainIngestion.getDocuments(brandId);
-  res.json({ documents });
+  try {
+    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
+    const documents = await brandBrainIngestion.getDocumentsAsync(brandId);
+    res.json({ documents });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch documents" });
+  }
 });
 
 // Delete Knowledge Document
 router.delete("/:brandId/documents/:documentId", async (req: Request, res: Response) => {
   const { brandId, documentId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -649,60 +685,75 @@ router.delete("/:brandId/documents/:documentId", async (req: Request, res: Respo
     return;
   }
 
-  const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-  const success = brandBrainIngestion.deleteDocument(brandId, documentId);
-  if (!success) {
-    res.status(404).json({ error: "Document not found" });
-    return;
+  try {
+    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
+    const success = await brandBrainIngestion.deleteDocument(brandId, documentId);
+    if (!success) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+
+    await brandBrainRepo.logAuditAsync(
+      brandId,
+      auth.user,
+      "profile",
+      documentId,
+      "delete",
+      `Deleted knowledge document ${documentId}`,
+      {},
+      req.token
+    );
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete document" });
   }
-
-  brandBrainRepo.logAudit({
-    brandId,
-    userId: auth.user.id,
-    userName: auth.user.name,
-    entityType: "profile",
-    entityId: documentId,
-    action: "delete",
-    summary: `Deleted knowledge document ${documentId}`
-  });
-
-  res.json({ success: true });
 });
 
-// Get Chunks
+// Get Chunks (Database-backed)
 router.get("/:brandId/chunks", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error) {
     res.status(auth.status).json({ error: auth.error });
     return;
   }
 
-  const documentId = req.query.documentId as string | undefined;
-  const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-  const chunks = brandBrainIngestion.getChunks(brandId, documentId);
-  res.json({ chunks });
+  try {
+    const documentId = req.query.documentId as string | undefined;
+    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
+    const chunks = await brandBrainIngestion.getChunksAsync(brandId, documentId);
+    res.json({ chunks });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch chunks" });
+  }
 });
 
-// Get Evidence Claims & Sources
+// Get Evidence Claims & Sources (Database-backed)
 router.get("/:brandId/evidence", async (req: Request, res: Response) => {
   const { brandId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error) {
     res.status(auth.status).json({ error: auth.error });
     return;
   }
 
-  const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-  const claims = brandBrainIngestion.getEvidenceClaims(brandId);
-  const sources = brandBrainIngestion.getEvidenceSources(brandId);
-  res.json({ claims, sources });
+  try {
+    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
+    const [claims, sources] = await Promise.all([
+      brandBrainIngestion.getEvidenceClaimsAsync(brandId),
+      brandBrainIngestion.getEvidenceSourcesAsync(brandId)
+    ]);
+    res.json({ claims, sources });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch evidence" });
+  }
 });
 
-// Verify / Reject Evidence Claim
+// Verify / Reject Evidence Claim (Database-backed, with real authenticated reviewer provenance)
 router.put("/:brandId/evidence/:claimId/status", async (req: Request, res: Response) => {
   const { brandId, claimId } = req.params;
-  const auth = resolveAuthContext(req, brandId);
+  const auth = await resolveAuthContext(req, brandId);
   if (auth.error || !auth.user) {
     res.status(auth.status).json({ error: auth.error });
     return;
@@ -721,21 +772,22 @@ router.put("/:brandId/evidence/:claimId/status", async (req: Request, res: Respo
 
   try {
     const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const updated = brandBrainIngestion.verifyClaim(brandId, claimId, status);
+    const updated = await brandBrainIngestion.verifyClaimAsync(brandId, claimId, status, auth.user.id);
 
-    brandBrainRepo.logAudit({
+    await brandBrainRepo.logAuditAsync(
       brandId,
-      userId: auth.user.id,
-      userName: auth.user.name,
-      entityType: "policy",
-      entityId: claimId,
-      action: "update",
-      summary: `Updated evidence claim status to '${status}': "${updated.claimText.slice(0, 50)}..."`
-    });
+      auth.user,
+      "policy",
+      claimId,
+      "update",
+      `Updated evidence claim status to '${status}': "${updated.claimText.slice(0, 50)}..."`,
+      { status, verifiedBy: auth.user.id },
+      req.token
+    );
 
     res.json({ claim: updated });
   } catch (err: any) {
-    res.status(404).json({ error: err.message });
+    res.status(404).json({ error: err.message || "Failed to update evidence claim" });
   }
 });
 

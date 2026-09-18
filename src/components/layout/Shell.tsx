@@ -8,9 +8,19 @@ import { CalendarView } from "../views/CalendarView.tsx";
 import { GrowthView } from "../views/GrowthView.tsx";
 import { BrandBrainView } from "../views/BrandBrainView.tsx";
 import { SettingsView } from "../views/SettingsView.tsx";
+import { AuthView } from "../views/AuthView.tsx";
 
 export function Shell() {
-  const { currentView } = useApp();
+  const { currentView, setCurrentView, loadDemoWorkspace } = useApp();
+
+  if (currentView === "auth") {
+    return (
+      <AuthView
+        onSuccess={() => setCurrentView("home")}
+        onExploreDemo={() => loadDemoWorkspace()}
+      />
+    );
+  }
 
   const renderView = () => {
     switch (currentView) {

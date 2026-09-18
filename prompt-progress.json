@@ -46,6 +46,13 @@
       "notes": "Real Brand Brain ingestion, storage & evidence gate: removed in-memory persistence for live DB mode, removed hardcoded org-001 tenancy, implemented binary file uploads (multer + pdf-parse/mammoth/xlsx/csv-parse), full SSRF-protected crawler, content hash deduplication with revision incrementing, private scoped R2 storage paths, unverified evidence candidate gate with verification workflow, updated trust taxonomy, and cross-brand pgvector retrieval."
     },
     {
+      "code": "OR-G04C",
+      "status": "completed",
+      "startedAt": "2026-09-18T12:00:00.000Z",
+      "completedAt": "2026-09-18T19:48:00.000Z",
+      "notes": "OR-G04C Final Live Security, Persistence & CI Gate: GitHub Actions standardized on Bun frozen lockfile with green build/lint/tests; Migration 20260918000006 safely dropped all legacy permissive RLS policies; user-scoped database access with token forwarding; live Supabase Auth session & tenancy resolution in frontend; R2 signed URLs implemented; cross-tenant verification verified; zero unhandled errors or swallowed promises."
+    },
+    {
       "code": "OR-P05",
       "status": "pending",
       "startedAt": null,

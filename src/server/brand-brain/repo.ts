@@ -15,6 +15,8 @@ import {
 import { brandBrainIngestion } from "./ingestion-service.ts";
 import { getServerEnv } from "../env.ts";
 import { getDemoBrandBrain } from "../../fixtures/demoData.ts";
+import { isLiveSupabaseConfigured } from "../supabase/client.ts";
+import { supabaseBrandBrainCoreRepo } from "./supabase-core-repo.ts";
 
 export interface BrandBrainStore {
   profiles: Map<string, BrandProfileDetails>;
@@ -43,9 +45,8 @@ export class BrandBrainRepository {
 
   constructor() {
     const env = getServerEnv();
-    if (env.NODE_ENV === "test" || (env.NODE_ENV !== "production" && env.DEMO_MODE)) {
+    if (env.NODE_ENV === "test") {
       this.seedFromDemoFixtures("brand-001");
-      this.seedFromDemoFixtures("33333333-3333-4000-8000-333333333331");
     }
   }
 
@@ -1037,6 +1038,383 @@ export class BrandBrainRepository {
       summary: `${newStatus === "archived" ? "Archived" : "Restored"} competitor "${current.name}".`
     });
     return current;
+  }
+
+  // --- Persistent Database-Backed Async Methods (OR-G04C) ---
+
+  public async getBrandBrainAsync(brandId: string, accessToken?: string): Promise<BrandBrainKnowledge> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.getBrandBrain(brandId, accessToken);
+    }
+    return this.getBrandBrain(brandId);
+  }
+
+  public async updateProfileAsync(
+    brandId: string,
+    profile: Partial<BrandProfileDetails>,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandProfileDetails> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.updateProfile(brandId, profile, user, accessToken);
+    }
+    return this.updateProfile(brandId, profile, user);
+  }
+
+  public async createProductAsync(
+    brandId: string,
+    input: Omit<BrandProduct, "id" | "brandId" | "createdAt" | "updatedAt">,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandProduct> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.createProduct(brandId, input, user, accessToken);
+    }
+    return this.createProduct(brandId, input, user);
+  }
+
+  public async updateProductAsync(
+    brandId: string,
+    productId: string,
+    input: Partial<BrandProduct>,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandProduct> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.updateProduct(brandId, productId, input, user, accessToken);
+    }
+    return this.updateProduct(brandId, productId, input, user);
+  }
+
+  public async toggleArchiveProductAsync(
+    brandId: string,
+    productId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandProduct> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.toggleArchiveProduct(brandId, productId, user, accessToken);
+    }
+    return this.toggleArchiveProduct(brandId, productId, user);
+  }
+
+  public async deleteProductAsync(
+    brandId: string,
+    productId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<boolean> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.deleteProduct(brandId, productId, user, accessToken);
+    }
+    return this.deleteProduct(brandId, productId, user);
+  }
+
+  public async createAudienceAsync(
+    brandId: string,
+    input: Omit<BrandAudience, "id" | "brandId" | "createdAt" | "updatedAt">,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandAudience> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.createAudience(brandId, input, user, accessToken);
+    }
+    return this.createAudience(brandId, input, user);
+  }
+
+  public async updateAudienceAsync(
+    brandId: string,
+    audienceId: string,
+    input: Partial<BrandAudience>,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandAudience> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.updateAudience(brandId, audienceId, input, user, accessToken);
+    }
+    return this.updateAudience(brandId, audienceId, input, user);
+  }
+
+  public async toggleArchiveAudienceAsync(
+    brandId: string,
+    audienceId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandAudience> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.toggleArchiveAudience(brandId, audienceId, user, accessToken);
+    }
+    return this.toggleArchiveAudience(brandId, audienceId, user);
+  }
+
+  public async deleteAudienceAsync(
+    brandId: string,
+    audienceId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<boolean> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.deleteAudience(brandId, audienceId, user, accessToken);
+    }
+    return this.deleteAudience(brandId, audienceId, user);
+  }
+
+  public async updateVoiceProfileAsync(
+    brandId: string,
+    input: Partial<BrandVoiceProfile>,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandVoiceProfile> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.updateVoiceProfile(brandId, input, user, accessToken);
+    }
+    return this.updateVoiceProfile(brandId, input, user);
+  }
+
+  public async createVoiceExampleAsync(
+    brandId: string,
+    input: Omit<BrandVoiceExample, "id" | "brandId" | "createdAt">,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandVoiceExample> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.createVoiceExample(brandId, input, user, accessToken);
+    }
+    return this.createVoiceExample(brandId, input, user);
+  }
+
+  public async deleteVoiceExampleAsync(
+    brandId: string,
+    exampleId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<boolean> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.deleteVoiceExample(brandId, exampleId, user, accessToken);
+    }
+    return this.deleteVoiceExample(brandId, exampleId, user);
+  }
+
+  public async createTerminologyAsync(
+    brandId: string,
+    input: Omit<BrandTerminology, "id" | "brandId" | "createdAt">,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandTerminology> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.createTerminology(brandId, input, user, accessToken);
+    }
+    return this.createTerminology(brandId, input, user);
+  }
+
+  public async deleteTerminologyAsync(
+    brandId: string,
+    termId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<boolean> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.deleteTerminology(brandId, termId, user, accessToken);
+    }
+    return this.deleteTerminology(brandId, termId, user);
+  }
+
+  public async createPolicyAsync(
+    brandId: string,
+    input: Omit<BrandPolicy, "id" | "brandId" | "createdAt" | "updatedAt">,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandPolicy> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.createPolicy(brandId, input, user, accessToken);
+    }
+    return this.createPolicy(brandId, input, user);
+  }
+
+  public async updatePolicyAsync(
+    brandId: string,
+    policyId: string,
+    input: Partial<BrandPolicy>,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandPolicy> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.updatePolicy(brandId, policyId, input, user, accessToken);
+    }
+    return this.updatePolicy(brandId, policyId, input, user);
+  }
+
+  public async toggleArchivePolicyAsync(
+    brandId: string,
+    policyId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandPolicy> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.toggleArchivePolicy(brandId, policyId, user, accessToken);
+    }
+    return this.toggleArchivePolicy(brandId, policyId, user);
+  }
+
+  public async createCompetitorAsync(
+    brandId: string,
+    input: Omit<BrandCompetitor, "id" | "brandId" | "createdAt" | "updatedAt">,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandCompetitor> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.createCompetitor(brandId, input, user, accessToken);
+    }
+    return this.createCompetitor(brandId, input, user);
+  }
+
+  public async updateCompetitorAsync(
+    brandId: string,
+    competitorId: string,
+    input: Partial<BrandCompetitor>,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandCompetitor> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.updateCompetitor(brandId, competitorId, input, user, accessToken);
+    }
+    return this.updateCompetitor(brandId, competitorId, input, user);
+  }
+
+  public async toggleArchiveCompetitorAsync(
+    brandId: string,
+    competitorId: string,
+    user: { id: string; name: string },
+    accessToken?: string
+  ): Promise<BrandCompetitor> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.toggleArchiveCompetitor(brandId, competitorId, user, accessToken);
+    }
+    return this.toggleArchiveCompetitor(brandId, competitorId, user);
+  }
+
+  public deleteProduct(
+    brandId: string,
+    productId: string,
+    user: { id: string; name: string }
+  ): boolean {
+    const product = this.store.products.get(productId);
+    if (!product || product.brandId !== brandId) return false;
+    this.store.products.delete(productId);
+    this.logAudit({
+      brandId,
+      userId: user.id,
+      userName: user.name,
+      entityType: "product",
+      entityId: productId,
+      action: "delete",
+      summary: `Deleted product offering "${product.name}".`
+    });
+    return true;
+  }
+
+  public deleteAudience(
+    brandId: string,
+    audienceId: string,
+    user: { id: string; name: string }
+  ): boolean {
+    const audience = this.store.audiences.get(audienceId);
+    if (!audience || audience.brandId !== brandId) return false;
+    this.store.audiences.delete(audienceId);
+    this.logAudit({
+      brandId,
+      userId: user.id,
+      userName: user.name,
+      entityType: "audience",
+      entityId: audienceId,
+      action: "delete",
+      summary: `Deleted target audience persona "${audience.name}".`
+    });
+    return true;
+  }
+
+  public deleteTerminology(
+    brandId: string,
+    termId: string,
+    user: { id: string; name: string }
+  ): boolean {
+    const term = this.store.terminology.get(termId);
+    if (!term || term.brandId !== brandId) return false;
+    this.store.terminology.delete(termId);
+    this.logAudit({
+      brandId,
+      userId: user.id,
+      userName: user.name,
+      entityType: "terminology",
+      entityId: termId,
+      action: "delete",
+      summary: `Deleted terminology "${term.term}".`
+    });
+    return true;
+  }
+
+  public getAuditHistory(brandId: string): BrandAuditLog[] {
+    return this.store.auditLogs
+      .filter((l) => l.brandId === brandId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  public async logAuditAsync(
+    brandIdOrLog: string | Omit<BrandAuditLog, "id" | "createdAt">,
+    userOrAccessToken?: { id: string; name: string } | string,
+    entityType?: "profile" | "product" | "audience" | "voice" | "terminology" | "policy" | "competitor",
+    entityId?: string,
+    action?: "create" | "update" | "archive" | "unarchive" | "delete",
+    summary?: string,
+    details?: Record<string, unknown>,
+    _accessToken?: string
+  ): Promise<BrandAuditLog> {
+    if (typeof brandIdOrLog === "object") {
+      const log = brandIdOrLog;
+      if (isLiveSupabaseConfigured()) {
+        return await supabaseBrandBrainCoreRepo.logAudit(
+          log.brandId,
+          { id: log.userId, name: log.userName },
+          log.entityType as any,
+          log.entityId,
+          log.action,
+          log.summary,
+          log.details || {}
+        );
+      }
+      return this.logAudit(log);
+    }
+
+    const brandId = brandIdOrLog;
+    const user = userOrAccessToken as { id: string; name: string };
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.logAudit(
+        brandId,
+        user,
+        entityType || "profile",
+        entityId || "unknown",
+        action || "create",
+        summary || "",
+        details || {}
+      );
+    }
+    return this.logAudit({
+      brandId,
+      userId: user.id,
+      userName: user.name,
+      entityType: (entityType || "profile") as any,
+      entityId: entityId || "unknown",
+      action: (action || "create") as any,
+      summary: summary || "",
+      details,
+    });
+  }
+
+  public async getAuditHistoryAsync(brandId: string, accessToken?: string): Promise<BrandAuditLog[]> {
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseBrandBrainCoreRepo.getAuditHistory(brandId, accessToken);
+    }
+    return this.getAuditHistory(brandId);
   }
 }
 
