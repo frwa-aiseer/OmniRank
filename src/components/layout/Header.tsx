@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldCheck, User, Building, Sparkles, ChevronDown, Plus, Globe, LogOut } from "lucide-react";
+import { ShieldCheck, Shield, AlertTriangle, Database, XCircle, User, Building, Sparkles, ChevronDown, Plus, Globe, LogOut } from "lucide-react";
 import { useApp } from "../../context/AppContext.tsx";
 
 export function Header() {
@@ -15,6 +15,7 @@ export function Header() {
     currentUser,
     setCurrentView,
     isLiveSupabase,
+    rlsState,
     signOut,
   } = useApp();
 
@@ -22,6 +23,51 @@ export function Header() {
   const [brandDropdownOpen, setBrandDropdownOpen] = useState(false);
 
   const orgBrands = (brands || []).filter((b) => b && currentOrg?.id && b.organizationId === currentOrg.id);
+
+  const getRlsBadge = () => {
+    switch (rlsState) {
+      case "RLS Verified":
+        return {
+          Icon: ShieldCheck,
+          className: "bg-emerald-50 text-emerald-700 border-emerald-200/60",
+          title: "Row Level Security has been verified with live integration tests against Supabase PostgreSQL.",
+        };
+      case "RLS Configured":
+        return {
+          Icon: Shield,
+          className: "bg-blue-50 text-blue-700 border-blue-200/60",
+          title: "RLS schema & policies are configured on PostgreSQL. Run verification tests in Settings to confirm full isolation.",
+        };
+      case "Database Not Initialized":
+        return {
+          Icon: Database,
+          className: "bg-amber-50 text-amber-700 border-amber-200/60",
+          title: "Connected Supabase project does not have OmniRank database tables or migrations applied yet.",
+        };
+      case "Verification Required":
+        return {
+          Icon: AlertTriangle,
+          className: "bg-orange-50 text-orange-700 border-orange-200/60",
+          title: "Supabase connection requires authenticated session to verify Row Level Security policies.",
+        };
+      case "Security Error":
+        return {
+          Icon: XCircle,
+          className: "bg-rose-50 text-rose-700 border-rose-200/60",
+          title: "Error connecting to Supabase database or verifying Row Level Security.",
+        };
+      case "Demo Mode":
+      default:
+        return {
+          Icon: Shield,
+          className: "bg-neutral-100 text-neutral-600 border-neutral-200",
+          title: "Running in local demo mode with deterministic mock adapter.",
+        };
+    }
+  };
+
+  const badge = getRlsBadge();
+  const BadgeIcon = badge.Icon;
 
   return (
     <header
@@ -154,13 +200,14 @@ export function Header() {
 
       {/* Right: User Role & Tenant Isolation Badge */}
       <div className="flex items-center gap-4">
-        <div
-          title="Row Level Security is active. Anonymous & cross-tenant access is blocked at the database engine level."
-          className="flex items-center gap-1.5 text-xs text-neutral-500 bg-emerald-50 text-emerald-700 border border-emerald-200/60 px-2 py-1 rounded"
+        <button
+          onClick={() => setCurrentView("settings")}
+          title={badge.title}
+          className={`flex items-center gap-1.5 text-xs border px-2 py-1 rounded transition hover:opacity-80 cursor-pointer ${badge.className}`}
         >
-          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-          <span className="font-medium hidden sm:inline">RLS Protected</span>
-        </div>
+          <BadgeIcon className="w-3.5 h-3.5" />
+          <span className="font-medium hidden sm:inline">{rlsState}</span>
+        </button>
 
         <button
           id="user-profile-btn"

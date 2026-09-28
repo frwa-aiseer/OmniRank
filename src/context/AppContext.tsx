@@ -55,6 +55,8 @@ interface AppContextType {
   disconnectSearchConsole: () => void;
   isAuthenticated: boolean;
   isLiveSupabase: boolean;
+  rlsState: "Demo Mode" | "Database Not Initialized" | "RLS Configured" | "RLS Verified" | "Verification Required" | "Security Error";
+  refreshRlsStatus: () => Promise<void>;
   signOut: () => Promise<void>;
   loadDemoWorkspace: () => void;
 }
@@ -215,6 +217,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [orgMembers, setOrgMembers] = useState<OrganizationMember[]>(isLiveSupabase ? [] : initialOrgMembers);
   const [brandMembers, setBrandMembers] = useState<BrandMember[]>(isLiveSupabase ? [] : initialBrandMembers);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!isLiveSupabase);
+  const [rlsState, setRlsState] = useState<"Demo Mode" | "Database Not Initialized" | "RLS Configured" | "RLS Verified" | "Verification Required" | "Security Error">(
+    isLiveSupabase ? "Database Not Initialized" : "Demo Mode"
+  );
+
+  const refreshRlsStatus = async (tokenOverride?: string) => {
+    try {
+      let token = tokenOverride;
+      if (!token) {
+        const { data: sessionData } = await supabase.auth.getSession();
+        token = sessionData.session?.access_token;
+      }
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch("/api/tenancy/status", { headers });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rlsState) {
+          setRlsState(data.rlsState);
+        }
+      }
+    } catch {
+      setRlsState(isLiveSupabase ? "Security Error" : "Demo Mode");
+    }
+  };
 
   // Content, Opportunities, and Growth state per brand
   const [articles, setArticles] = useState<ArticleDocument[]>([]);
@@ -410,6 +436,59 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     let isMounted = true;
 
+    async function loadRolesAndMembers(orgId?: string, brandId?: string, token?: string) {
+      if (!token) return;
+      try {
+        if (orgId && orgId !== placeholderEmptyOrg.id) {
+          const memRes = await fetch(`/api/tenancy/organizations/${orgId}/members`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (memRes.ok) {
+            const data = await memRes.json();
+            if (isMounted && Array.isArray(data.members)) {
+              setOrgMembers(data.members);
+            }
+          }
+        } else if (isMounted) {
+          setOrgMembers([]);
+        }
+
+        if (brandId && brandId !== placeholderEmptyBrand.id) {
+          const bmRes = await fetch(`/api/tenancy/brands/${brandId}/members`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (bmRes.ok) {
+            const data = await bmRes.json();
+            if (isMounted && Array.isArray(data.members)) {
+              setBrandMembers(data.members);
+            }
+          }
+        } else if (isMounted) {
+          setBrandMembers([]);
+        }
+
+        const rolesQuery = new URLSearchParams();
+        if (orgId && orgId !== placeholderEmptyOrg.id) rolesQuery.set("orgId", orgId);
+        if (brandId && brandId !== placeholderEmptyBrand.id) rolesQuery.set("brandId", brandId);
+
+        const rolesRes = await fetch(`/api/tenancy/roles?${rolesQuery.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (rolesRes.ok) {
+          const rolesData = await rolesRes.json();
+          if (isMounted) {
+            setCurrentUser((prev) => ({
+              ...prev,
+              orgRole: rolesData.orgRole || "member",
+              brandRole: rolesData.brandRole || "viewer",
+            }));
+          }
+        }
+      } catch (e) {
+        console.error("Error loading live roles and members", e);
+      }
+    }
+
     async function initAuth() {
       try {
         const { data: sessionData } = await supabase.auth.getSession();
@@ -420,6 +499,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             setIsAuthenticated(false);
             setCurrentView("auth");
           }
+          await refreshRlsStatus();
           return;
         }
 
@@ -430,8 +510,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             id: session.user.id,
             email: session.user.email || "",
             fullName: userMeta.full_name || session.user.email?.split("@")[0] || "User",
-            orgRole: "owner",
-            brandRole: "strategist",
+            orgRole: "member",
+            brandRole: "viewer",
           };
           setCurrentUser(profile);
           if (currentView === "auth") {
@@ -462,11 +542,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
               },
             });
 
+            let activeBrand = placeholderEmptyBrand;
             if (brandsRes.ok) {
               const { brands: orgBrands } = await brandsRes.json();
               if (Array.isArray(orgBrands) && orgBrands.length > 0) {
                 setBrands(orgBrands);
-                setCurrentBrand(orgBrands[0]);
+                activeBrand = orgBrands[0];
+                setCurrentBrand(activeBrand);
 
                 // Fetch websites for active brand
                 const webRes = await fetch(`/api/tenancy/brands/${orgBrands[0].id}/websites`, {
@@ -488,6 +570,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 setCurrentWebsite(null);
               }
             }
+
+            // Load real roles and real members from PostgreSQL
+            await loadRolesAndMembers(activeOrg.id, activeBrand.id, session.access_token);
           } else {
             // Live user with 0 orgs yet
             setOrganizations([]);
@@ -496,8 +581,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
             setCurrentBrand(placeholderEmptyBrand);
             setWebsites([]);
             setCurrentWebsite(null);
+            setOrgMembers([]);
+            setBrandMembers([]);
           }
         }
+
+        await refreshRlsStatus(session.access_token);
       } catch {
         // Leave in unauthenticated state
       }
@@ -525,7 +614,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
             orgRole: "member",
             brandRole: "viewer",
           });
+          setOrgMembers([]);
+          setBrandMembers([]);
         }
+        refreshRlsStatus();
       } else if (event === "SIGNED_IN") {
         initAuth();
       }
@@ -559,6 +651,63 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const brandWebsites = (websites || []).filter((w) => w && w.brandId === currentBrand.id);
     setCurrentWebsite(brandWebsites.length > 0 ? brandWebsites[0] : null);
   }, [currentBrand?.id, websites]);
+
+  // Sync real live roles and members when active organization or brand changes
+  useEffect(() => {
+    if (!isLiveSupabase || !isAuthenticated) return;
+    async function syncActiveRolesAndMembers() {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) return;
+
+      const orgId = currentOrg?.id;
+      const brandId = currentBrand?.id;
+
+      if (orgId && orgId !== placeholderEmptyOrg.id) {
+        try {
+          const memRes = await fetch(`/api/tenancy/organizations/${orgId}/members`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (memRes.ok) {
+            const mData = await memRes.json();
+            if (Array.isArray(mData.members)) setOrgMembers(mData.members);
+          }
+        } catch {}
+      }
+
+      if (brandId && brandId !== placeholderEmptyBrand.id) {
+        try {
+          const bmRes = await fetch(`/api/tenancy/brands/${brandId}/members`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (bmRes.ok) {
+            const bmData = await bmRes.json();
+            if (Array.isArray(bmData.members)) setBrandMembers(bmData.members);
+          }
+        } catch {}
+      }
+
+      const rolesQuery = new URLSearchParams();
+      if (orgId && orgId !== placeholderEmptyOrg.id) rolesQuery.set("orgId", orgId);
+      if (brandId && brandId !== placeholderEmptyBrand.id) rolesQuery.set("brandId", brandId);
+
+      try {
+        const rolesRes = await fetch(`/api/tenancy/roles?${rolesQuery.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (rolesRes.ok) {
+          const rData = await rolesRes.json();
+          setCurrentUser((prev) => ({
+            ...prev,
+            orgRole: rData.orgRole || "member",
+            brandRole: rData.brandRole || "viewer",
+          }));
+        }
+      } catch {}
+    }
+
+    syncActiveRolesAndMembers();
+  }, [currentOrg?.id, currentBrand?.id, isLiveSupabase, isAuthenticated]);
 
   const signOut = async () => {
     if (isLiveSupabase) {
@@ -785,6 +934,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const addOrgMember = (email: string, role: OrgRole) => {
+    if (isLiveSupabase) {
+      throw new Error("Team invitations will be implemented in a later packet");
+    }
     const newMember: OrganizationMember = {
       id: crypto.randomUUID(),
       organizationId: currentOrg.id,
@@ -822,6 +974,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const addBrandMember = (email: string, role: BrandRole) => {
+    if (isLiveSupabase) {
+      throw new Error("Team invitations will be implemented in a later packet");
+    }
     const newMember: BrandMember = {
       id: crypto.randomUUID(),
       brandId: currentBrand.id,
@@ -899,6 +1054,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         disconnectSearchConsole,
         isAuthenticated,
         isLiveSupabase,
+        rlsState,
+        refreshRlsStatus,
         signOut,
         loadDemoWorkspace,
       }}

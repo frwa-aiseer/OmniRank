@@ -8,7 +8,7 @@ import {
   EvidenceVerificationStatus,
   SourceType
 } from "../../types/index.ts";
-import { getAdminSupabaseClient, isLiveSupabaseConfigured } from "../supabase/client.ts";
+import { createScopedUserSupabaseClient, getAdminSupabaseClient, isLiveSupabaseConfigured } from "../supabase/client.ts";
 
 export interface ChunkSimilarityResult {
   chunk: KnowledgeChunk;
@@ -54,12 +54,23 @@ export interface IBrandBrainRepository {
 /**
  * SupabaseBrandBrainRepository
  * Persistent PostgreSQL & pgvector implementation.
+ * CRITICAL: Normal operations NEVER default to getAdminSupabaseClient().
+ * User-triggered operations run through a request-scoped user client so RLS is enforced.
  */
 export class SupabaseBrandBrainRepository implements IBrandBrainRepository {
   private client: SupabaseClient;
 
-  constructor(customClient?: SupabaseClient) {
-    this.client = customClient || getAdminSupabaseClient();
+  constructor(clientOrAccessToken?: SupabaseClient | string, isServiceRole?: boolean) {
+    if (isServiceRole) {
+      this.client = getAdminSupabaseClient();
+    } else if (clientOrAccessToken && typeof clientOrAccessToken !== "string") {
+      this.client = clientOrAccessToken;
+    } else if (typeof clientOrAccessToken === "string") {
+      this.client = createScopedUserSupabaseClient(clientOrAccessToken);
+    } else {
+      // Scoped user client with publishable/anon key; never admin secret key
+      this.client = createScopedUserSupabaseClient();
+    }
   }
 
   async saveSource(source: KnowledgeSource): Promise<KnowledgeSource> {
@@ -833,9 +844,12 @@ export class InMemoryBrandBrainRepository implements IBrandBrainRepository {
 /**
  * Repository Factory
  */
-export function createBrandBrainRepository(): IBrandBrainRepository {
+export function createBrandBrainRepository(
+  clientOrAccessToken?: SupabaseClient | string,
+  isServiceRole?: boolean
+): IBrandBrainRepository {
   if (isLiveSupabaseConfigured()) {
-    return new SupabaseBrandBrainRepository();
+    return new SupabaseBrandBrainRepository(clientOrAccessToken, isServiceRole);
   }
   return new InMemoryBrandBrainRepository();
 }

@@ -18,6 +18,7 @@ import {
   EvidenceVerificationStatus,
   EvidenceClaimType
 } from "../../types/index.ts";
+import { brandBrainApi } from "../../services/brandBrainApi.ts";
 
 interface EvidenceTabProps {
   brandId: string;
@@ -48,14 +49,7 @@ export function EvidenceTab({
 
     setUpdatingClaimId(claimId);
     try {
-      const res = await fetch(`/api/brand-brain/${brandId}/evidence/${claimId}/status`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus })
-      });
-      if (!res.ok) {
-        throw new Error("Failed to update status");
-      }
+      await brandBrainApi.verifyClaim(brandId, claimId, newStatus);
       onNotify(`Evidence claim marked as '${newStatus}'`);
       onRefresh();
     } catch (err: any) {

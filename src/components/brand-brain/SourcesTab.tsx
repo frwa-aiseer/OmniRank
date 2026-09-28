@@ -24,6 +24,7 @@ import {
   TrustLevel,
   DocumentClassification
 } from "../../types/index.ts";
+import { brandBrainApi } from "../../services/brandBrainApi.ts";
 
 interface SourcesTabProps {
   brandId: string;
@@ -83,7 +84,7 @@ export function SourcesTab({
 
     setIsSubmitting(true);
     try {
-      let res: Response;
+      let result: any;
 
       if (ingestionType === "file" && selectedFile) {
         // Binary upload via FormData without converting PDF/DOCX/XLSX to strings
@@ -93,10 +94,7 @@ export function SourcesTab({
         formData.append("trustLevel", trustLevel);
         formData.append("classification", classification);
 
-        res = await fetch(`/api/brand-brain/${brandId}/upload`, {
-          method: "POST",
-          body: formData
-        });
+        result = await brandBrainApi.uploadFile(brandId, formData);
       } else {
         let content = rawText;
         let fileType: any = "txt";
@@ -107,33 +105,23 @@ export function SourcesTab({
           fileType = "note";
         }
 
-        res = await fetch(`/api/brand-brain/${brandId}/ingest`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sourceType: ingestionType === "url" ? "website" : "manual_note",
-            sourceName: sourceName || (ingestionType === "url" ? sourceUrl : "Manual Note"),
-            sourceUrl: sourceUrl || undefined,
-            fileType,
-            content,
-            trustLevel,
-            classification
-          })
+        result = await brandBrainApi.ingestContent(brandId, {
+          sourceType: ingestionType === "url" ? "website" : "manual_note",
+          sourceName: sourceName || (ingestionType === "url" ? sourceUrl : "Manual Note"),
+          sourceUrl: sourceUrl || undefined,
+          fileType,
+          content,
+          trustLevel,
+          classification
         });
       }
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Ingestion failed");
-      }
-
-      const result = await res.json();
       if (result.isDuplicate) {
         onNotify(`Document is already indexed (Content hash matched). No re-embedding needed.`);
       } else if (result.sanitizationApplied) {
         onNotify(`Document parsed & sanitized: Untrusted directives/scripts neutralized.`);
       } else {
-        onNotify(`Successfully ingested '${result.document.title}' into ${result.chunks.length} semantic chunks!`);
+        onNotify(`Successfully ingested '${result.document?.title || "Document"}' into ${result.chunks?.length || 0} semantic chunks!`);
       }
 
       // Reset form
@@ -153,11 +141,8 @@ export function SourcesTab({
     setSelectedDocForChunks(doc);
     setLoadingChunks(true);
     try {
-      const res = await fetch(`/api/brand-brain/${brandId}/chunks?documentId=${doc.id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setDocChunks(data.chunks || []);
-      }
+      const data = await brandBrainApi.getChunks(brandId, doc.id);
+      setDocChunks(data.chunks || []);
     } catch {
       setDocChunks([]);
     } finally {
@@ -173,14 +158,10 @@ export function SourcesTab({
     if (!confirm("Are you sure you want to remove this document and its semantic chunks?")) return;
 
     try {
-      const res = await fetch(`/api/brand-brain/${brandId}/documents/${docId}`, {
-        method: "DELETE"
-      });
-      if (res.ok) {
-        onNotify("Document and associated chunks deleted.");
-        if (selectedDocForChunks?.id === docId) setSelectedDocForChunks(null);
-        onRefresh();
-      }
+      await brandBrainApi.deleteDocument(brandId, docId);
+      onNotify("Document and associated chunks deleted.");
+      if (selectedDocForChunks?.id === docId) setSelectedDocForChunks(null);
+      onRefresh();
     } catch (err: any) {
       onNotify(`Failed to delete document: ${err.message}`);
     }
@@ -192,15 +173,8 @@ export function SourcesTab({
 
     setIsSearching(true);
     try {
-      const res = await fetch(`/api/brand-brain/${brandId}/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: searchQuery, topK: 4, minSimilarity: 0.1 })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setSearchResults(data.results || []);
-      }
+      const data = await brandBrainApi.search(brandId, searchQuery, 4, 0.1);
+      setSearchResults(data.results || []);
     } catch (err: any) {
       onNotify(`Search error: ${err.message}`);
     } finally {

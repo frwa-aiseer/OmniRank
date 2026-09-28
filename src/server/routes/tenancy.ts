@@ -201,6 +201,29 @@ tenancyRouter.delete("/websites/:websiteId", async (req: Request, res: Response)
   }
 });
 
+// 8c. Get real user roles for active org and brand
+tenancyRouter.get("/roles", async (req: Request, res: Response) => {
+  try {
+    const ctx = req.securityContext!;
+    const orgId = req.query.orgId as string | undefined;
+    const brandId = req.query.brandId as string | undefined;
+
+    const orgRole = orgId
+      ? await tenancyRepo.getOrgRoleAsync(orgId, ctx.userId, req.token, ctx.isServiceRole)
+      : null;
+    const brandRole = brandId
+      ? await tenancyRepo.getBrandRoleAsync(brandId, ctx.userId, req.token, ctx.isServiceRole)
+      : null;
+
+    res.json({
+      orgRole: orgRole || "member",
+      brandRole: brandRole || (orgRole === "owner" || orgRole === "admin" ? "strategist" : "viewer"),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 let liveDatabaseRlsVerified = false;
 
 export function setLiveDatabaseRlsVerified(verified: boolean) {
@@ -208,20 +231,53 @@ export function setLiveDatabaseRlsVerified(verified: boolean) {
 }
 
 // 9. Auth & Environment Status Check
-tenancyRouter.get("/status", (req: Request, res: Response) => {
+tenancyRouter.get("/status", async (req: Request, res: Response) => {
   const env = getServerEnv();
   const ctx = req.securityContext!;
 
   const hasLiveSupabase = isLiveSupabaseConfigured();
   const isDemoSession = ctx.userId?.startsWith("00000000") || false;
 
-  let rlsState: "Demo Mode" | "RLS Configured" | "RLS Verified" | "Verification Required / Error" = "Demo Mode";
+  let rlsState:
+    | "Demo Mode"
+    | "Database Not Initialized"
+    | "RLS Configured"
+    | "RLS Verified"
+    | "Verification Required"
+    | "Security Error" = "Demo Mode";
+
   if (env.DEMO_MODE) {
     rlsState = "Demo Mode";
   } else if (hasLiveSupabase) {
-    rlsState = liveDatabaseRlsVerified ? "RLS Verified" : "RLS Configured";
+    try {
+      const client = (await import("../supabase/client.ts")).getAdminSupabaseClient();
+      const { error } = await client.from("organizations").select("id").limit(1);
+
+      if (error) {
+        if (
+          error.code === "42P01" ||
+          error.code === "PGRST204" ||
+          error.message?.includes("does not exist") ||
+          error.message?.includes("relation")
+        ) {
+          rlsState = "Database Not Initialized";
+        } else {
+          rlsState = "Security Error";
+        }
+      } else {
+        if (liveDatabaseRlsVerified) {
+          rlsState = "RLS Verified";
+        } else if (!ctx.isAuthenticated) {
+          rlsState = "Verification Required";
+        } else {
+          rlsState = "RLS Configured";
+        }
+      }
+    } catch {
+      rlsState = "Security Error";
+    }
   } else {
-    rlsState = "Verification Required / Error";
+    rlsState = "Demo Mode";
   }
 
   res.json({

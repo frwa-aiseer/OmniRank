@@ -6,24 +6,43 @@ import {
   BrandVoiceExample,
   BrandTerminology,
   BrandPolicy,
-  BrandCompetitor
+  BrandCompetitor,
+  KnowledgeChunk,
+  SemanticSearchResult,
+  EvidenceVerificationStatus,
 } from "../types/index.ts";
 import { supabase } from "../lib/supabase/client.ts";
+import { isLiveBrowserSupabaseConfigured } from "../lib/env.ts";
 
-async function getAuthHeaders(extraHeaders: Record<string, string> = {}): Promise<Record<string, string>> {
-  let authHeader = "Bearer demo-token";
-  try {
-    const { data } = await supabase.auth.getSession();
-    if (data.session?.access_token) {
-      authHeader = `Bearer ${data.session.access_token}`;
+export async function getAuthHeaders(extraHeaders: Record<string, string> = {}): Promise<Record<string, string>> {
+  if (isLiveBrowserSupabaseConfigured()) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (!data.session?.access_token) {
+        throw new Error("Authentication required: No active Supabase session.");
+      }
+      return {
+        Authorization: `Bearer ${data.session.access_token}`,
+        ...extraHeaders,
+      };
+    } catch (err: any) {
+      throw new Error(err.message || "Authentication required: No active Supabase session.");
     }
-  } catch {
-    // Fall back to demo token for local preview
   }
+
   return {
-    Authorization: authHeader,
-    ...extraHeaders
+    Authorization: "Bearer demo-token",
+    ...extraHeaders,
   };
+}
+
+export async function authenticatedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const customHeaders = (init.headers as Record<string, string>) || {};
+  const authHeaders = await getAuthHeaders(customHeaders);
+  return fetch(url, {
+    ...init,
+    headers: authHeaders,
+  });
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -65,7 +84,12 @@ export const brandBrainApi = {
     return handleResponse(res);
   },
 
-  async verifyClaim(brandId: string, claimId: string, status: "unverified" | "verified" | "disputed" | "rejected", _userId?: string) {
+  async verifyClaim(
+    brandId: string,
+    claimId: string,
+    status: EvidenceVerificationStatus | string,
+    _userId?: string
+  ) {
     const headers = await getAuthHeaders({ "Content-Type": "application/json" });
     const res = await fetch(`/api/brand-brain/${brandId}/evidence/${claimId}/status`, {
       method: "PUT",
@@ -217,5 +241,51 @@ export const brandBrainApi = {
       headers
     });
     return handleResponse<{ competitor: BrandCompetitor }>(res);
+  },
+
+  async uploadFile(brandId: string, formData: FormData): Promise<any> {
+    const res = await authenticatedFetch(`/api/brand-brain/${brandId}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+    return handleResponse(res);
+  },
+
+  async ingestContent(brandId: string, payload: {
+    sourceType: string;
+    sourceName: string;
+    sourceUrl?: string;
+    fileType: string;
+    content: string;
+    trustLevel: string;
+    classification: string;
+  }): Promise<any> {
+    const res = await authenticatedFetch(`/api/brand-brain/${brandId}/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return handleResponse(res);
+  },
+
+  async getChunks(brandId: string, documentId: string): Promise<{ chunks: KnowledgeChunk[] }> {
+    const res = await authenticatedFetch(`/api/brand-brain/${brandId}/chunks?documentId=${encodeURIComponent(documentId)}`);
+    return handleResponse<{ chunks: KnowledgeChunk[] }>(res);
+  },
+
+  async deleteDocument(brandId: string, documentId: string): Promise<any> {
+    const res = await authenticatedFetch(`/api/brand-brain/${brandId}/documents/${encodeURIComponent(documentId)}`, {
+      method: "DELETE",
+    });
+    return handleResponse(res);
+  },
+
+  async search(brandId: string, query: string, topK = 4, minSimilarity = 0.1): Promise<{ results: SemanticSearchResult[] }> {
+    const res = await authenticatedFetch(`/api/brand-brain/${brandId}/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, topK, minSimilarity }),
+    });
+    return handleResponse<{ results: SemanticSearchResult[] }>(res);
   }
 };

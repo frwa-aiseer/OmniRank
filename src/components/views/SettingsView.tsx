@@ -55,6 +55,8 @@ export function SettingsView() {
     removeOrgMember,
     addBrandMember,
     removeBrandMember,
+    isLiveSupabase,
+    refreshRlsStatus,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<"tenancy" | "members" | "websites" | "rls-verify">("tenancy");
@@ -286,6 +288,8 @@ export function SettingsView() {
       if (res.ok) {
         const data = await res.json();
         setTestResults(data.results);
+        await refreshRlsStatus();
+        await fetchStatus();
       } else {
         const err = await res.json();
         setTestResults([
@@ -692,34 +696,41 @@ export function SettingsView() {
               </div>
 
               {/* Invite Org Member */}
-              <form onSubmit={handleAddOrgMember} className="pt-3 border-t border-neutral-100 space-y-2 text-xs">
-                <div className="flex gap-2">
-                  <input
-                    type="email"
-                    value={newMemberEmail}
-                    onChange={(e) => setNewMemberEmail(e.target.value)}
-                    placeholder="teammate@company.com"
-                    className="grow px-3 py-1.5 border border-neutral-300 rounded-lg"
-                    required
-                  />
-                  <select
-                    value={newMemberOrgRole}
-                    onChange={(e) => setNewMemberOrgRole(e.target.value as OrgRole)}
-                    className="px-2 py-1.5 border border-neutral-300 rounded-lg capitalize"
-                  >
-                    <option value="owner">Owner</option>
-                    <option value="admin">Admin</option>
-                    <option value="member">Member</option>
-                  </select>
+              {isLiveSupabase ? (
+                <div className="pt-3 border-t border-neutral-100 flex items-center gap-2 p-3 bg-neutral-50 rounded-lg text-xs text-neutral-600 border border-neutral-200">
+                  <Lock className="w-4 h-4 text-neutral-400 shrink-0" />
+                  <span>Team invitations will be implemented in a later packet.</span>
                 </div>
-                <button
-                  type="submit"
-                  disabled={currentUser.orgRole === "member"}
-                  className="w-full py-1.5 bg-neutral-900 disabled:opacity-40 hover:bg-neutral-800 text-white rounded-lg font-medium transition"
-                >
-                  {currentUser.orgRole === "member" ? "Only Org Admin/Owner Can Invite" : "+ Add Organization Member"}
-                </button>
-              </form>
+              ) : (
+                <form onSubmit={handleAddOrgMember} className="pt-3 border-t border-neutral-100 space-y-2 text-xs">
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      value={newMemberEmail}
+                      onChange={(e) => setNewMemberEmail(e.target.value)}
+                      placeholder="teammate@company.com"
+                      className="grow px-3 py-1.5 border border-neutral-300 rounded-lg"
+                      required
+                    />
+                    <select
+                      value={newMemberOrgRole}
+                      onChange={(e) => setNewMemberOrgRole(e.target.value as OrgRole)}
+                      className="px-2 py-1.5 border border-neutral-300 rounded-lg capitalize"
+                    >
+                      <option value="owner">Owner</option>
+                      <option value="admin">Admin</option>
+                      <option value="member">Member</option>
+                    </select>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={currentUser.orgRole === "member"}
+                    className="w-full py-1.5 bg-neutral-900 disabled:opacity-40 hover:bg-neutral-800 text-white rounded-lg font-medium transition cursor-pointer"
+                  >
+                    {currentUser.orgRole === "member" ? "Only Org Admin/Owner Can Invite" : "+ Add Organization Member"}
+                  </button>
+                </form>
+              )}
             </div>
 
             {/* Brand Members */}
@@ -764,37 +775,44 @@ export function SettingsView() {
               </div>
 
               {/* Add Brand Member */}
-              <form onSubmit={handleAddBrandMember} className="pt-3 border-t border-neutral-100 space-y-2 text-xs">
-                <div className="flex gap-2">
-                  <input
-                    type="email"
-                    value={newMemberEmail}
-                    onChange={(e) => setNewMemberEmail(e.target.value)}
-                    placeholder="creator@brand.com"
-                    className="grow px-3 py-1.5 border border-neutral-300 rounded-lg"
-                    required
-                  />
-                  <select
-                    value={newMemberBrandRole}
-                    onChange={(e) => setNewMemberBrandRole(e.target.value as BrandRole)}
-                    className="px-2 py-1.5 border border-neutral-300 rounded-lg capitalize"
-                  >
-                    <option value="strategist">Strategist</option>
-                    <option value="writer">Writer</option>
-                    <option value="reviewer">Reviewer</option>
-                    <option value="viewer">Viewer</option>
-                  </select>
+              {isLiveSupabase ? (
+                <div className="pt-3 border-t border-neutral-100 flex items-center gap-2 p-3 bg-neutral-50 rounded-lg text-xs text-neutral-600 border border-neutral-200">
+                  <Lock className="w-4 h-4 text-neutral-400 shrink-0" />
+                  <span>Team invitations will be implemented in a later packet.</span>
                 </div>
-                <button
-                  type="submit"
-                  disabled={currentUser.brandRole !== "strategist" && currentUser.orgRole === "member"}
-                  className="w-full py-1.5 bg-neutral-900 disabled:opacity-40 hover:bg-neutral-800 text-white rounded-lg font-medium transition"
-                >
-                  {currentUser.brandRole !== "strategist" && currentUser.orgRole === "member"
-                    ? "Only Strategists / Admins Can Assign"
-                    : "+ Add Brand Member"}
-                </button>
-              </form>
+              ) : (
+                <form onSubmit={handleAddBrandMember} className="pt-3 border-t border-neutral-100 space-y-2 text-xs">
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      value={newMemberEmail}
+                      onChange={(e) => setNewMemberEmail(e.target.value)}
+                      placeholder="creator@brand.com"
+                      className="grow px-3 py-1.5 border border-neutral-300 rounded-lg"
+                      required
+                    />
+                    <select
+                      value={newMemberBrandRole}
+                      onChange={(e) => setNewMemberBrandRole(e.target.value as BrandRole)}
+                      className="px-2 py-1.5 border border-neutral-300 rounded-lg capitalize"
+                    >
+                      <option value="strategist">Strategist</option>
+                      <option value="writer">Writer</option>
+                      <option value="reviewer">Reviewer</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={currentUser.brandRole !== "strategist" && currentUser.orgRole === "member"}
+                    className="w-full py-1.5 bg-neutral-900 disabled:opacity-40 hover:bg-neutral-800 text-white rounded-lg font-medium transition cursor-pointer"
+                  >
+                    {currentUser.brandRole !== "strategist" && currentUser.orgRole === "member"
+                      ? "Only Strategists / Admins Can Assign"
+                      : "+ Add Brand Member"}
+                  </button>
+                </form>
+              )}
             </div>
           </div>
         </div>

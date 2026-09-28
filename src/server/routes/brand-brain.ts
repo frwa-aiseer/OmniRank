@@ -1,9 +1,14 @@
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import { brandBrainRepo } from "../brand-brain/repo.ts";
+import { getBrandBrainIngestionService } from "../brand-brain/ingestion-service.ts";
 import { tenancyRepo } from "../auth/tenancy.ts";
 import { authenticateRequest } from "../auth/middleware.ts";
 import { OrgRole, BrandRole, DocumentFileType } from "../../types/index.ts";
+import { ParserSecurityError } from "../brand-brain/parsers.ts";
+
+export const ALLOWED_UPLOAD_EXTENSIONS = ["pdf", "docx", "xlsx", "csv", "md", "html", "txt"] as const;
+export type AllowedUploadExtension = (typeof ALLOWED_UPLOAD_EXTENSIONS)[number];
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -473,71 +478,97 @@ router.post("/:brandId/competitors/:competitorId/archive", async (req: Request, 
 // ==========================================
 
 // Multipart Binary File Upload (PDF, DOCX, XLSX, CSV, MD, TXT, HTML)
-router.post("/:brandId/upload", upload.single("file"), async (req: Request, res: Response) => {
-  const { brandId } = req.params;
-  const auth = await resolveAuthContext(req, brandId);
-  if (auth.error || !auth.user) {
-    res.status(auth.status).json({ error: auth.error });
-    return;
-  }
+router.post(
+  "/:brandId/upload",
+  (req: Request, res: Response, next: NextFunction) => {
+    upload.single("file")(req, res, (err: any) => {
+      if (err) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          res.status(400).json({ error: "File exceeds 25 MB maximum upload limit." });
+          return;
+        }
+        res.status(400).json({ error: err.message || "File upload error" });
+        return;
+      }
+      next();
+    });
+  },
+  async (req: Request, res: Response) => {
+    const { brandId } = req.params;
+    const auth = await resolveAuthContext(req, brandId);
+    if (auth.error || !auth.user) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
 
-  if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"])) {
-    res.status(403).json({ error: "Only Strategists and Writers can ingest content into Brand Brain" });
-    return;
-  }
+    if (!brandBrainRepo.checkPermission(auth.orgRole!, auth.brandRole!, ["strategist", "writer"])) {
+      res.status(403).json({ error: "Only Strategists and Writers can ingest content into Brand Brain" });
+      return;
+    }
 
-  if (!req.file) {
-    res.status(400).json({ error: "No file was uploaded in the 'file' field" });
-    return;
-  }
+    if (!req.file) {
+      res.status(400).json({ error: "No file was uploaded in the 'file' field" });
+      return;
+    }
 
-  try {
     const rawBuffer = req.file.buffer;
-    const fileName = req.file.originalname || "document";
-    const ext = fileName.split(".").pop()?.toLowerCase() || "txt";
-    const fileType = (["pdf", "docx", "xlsx", "csv", "md", "html", "txt", "note"].includes(ext)
-      ? ext
-      : "txt") as DocumentFileType;
+    const fileName = req.file.originalname || "";
+    const ext = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() : "";
 
+    if (!ext || !ALLOWED_UPLOAD_EXTENSIONS.includes(ext as any)) {
+      res.status(400).json({
+        error: `Unsupported file extension '${ext || "unknown"}'. Allowed upload formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.`
+      });
+      return;
+    }
+
+    const fileType = ext as DocumentFileType;
     const sourceName = req.body.sourceName || fileName.replace(/\.[^/.]+$/, "");
     const trustLevel = req.body.trustLevel;
     const classification = req.body.classification;
 
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const result = await brandBrainIngestion.ingestContent(
-      {
+    try {
+      const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+      const result = await ingestion.ingestContent(
+        {
+          brandId,
+          sourceType: "file_upload",
+          sourceName,
+          fileType,
+          fileName,
+          fileBufferOrText: rawBuffer,
+          trustLevel,
+          classification
+        },
+        auth.user,
+        { accessToken: req.token, isServiceRole: req.securityContext?.isServiceRole }
+      );
+
+      await brandBrainRepo.logAuditAsync(
         brandId,
-        sourceType: "file_upload",
-        sourceName,
-        fileType,
-        fileName,
-        fileBufferOrText: rawBuffer,
-        trustLevel,
-        classification
-      },
-      auth.user
-    );
+        auth.user,
+        "profile",
+        result.document.id,
+        "create",
+        `Uploaded binary file '${fileName}' (${result.chunks.length} chunks, ${result.evidenceClaims.length} claims).`,
+        {
+          isDuplicate: result.isDuplicate,
+          fileType,
+          fileSizeBytes: req.file.size
+        },
+        req.token
+      );
 
-    await brandBrainRepo.logAuditAsync(
-      brandId,
-      auth.user,
-      "profile",
-      result.document.id,
-      "create",
-      `Uploaded binary file '${fileName}' (${result.chunks.length} chunks, ${result.evidenceClaims.length} claims).`,
-      {
-        isDuplicate: result.isDuplicate,
-        fileType,
-        fileSizeBytes: req.file.size
-      },
-      req.token
-    );
-
-    res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || "Binary file upload failed" });
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof ParserSecurityError || err.message?.includes("Unsupported file")) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      res.status(500).json({ error: err.message || "Binary file upload failed" });
+    }
   }
-});
+);
 
 // Ingest Content (File upload, website crawl, manual note, spreadsheet)
 router.post("/:brandId/ingest", async (req: Request, res: Response) => {
@@ -567,25 +598,75 @@ router.post("/:brandId/ingest", async (req: Request, res: Response) => {
       metadata
     } = req.body;
 
+    const allowedUploadExtensions = ["pdf", "docx", "xlsx", "csv", "md", "html", "txt"] as const;
+    const allowedIngestTypes = [...allowedUploadExtensions, "note"];
+
+    let resolvedFileType: DocumentFileType;
+    if (fileType) {
+      const normalized = String(fileType).toLowerCase();
+      if (!allowedIngestTypes.includes(normalized as any)) {
+        res.status(400).json({
+          error: `Unsupported file type '${fileType}'. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.`
+        });
+        return;
+      }
+      resolvedFileType = normalized as DocumentFileType;
+    } else if (fileName && fileName.includes(".")) {
+      const ext = fileName.split(".").pop()?.toLowerCase();
+      if (!ext || !allowedUploadExtensions.includes(ext as any)) {
+        res.status(400).json({
+          error: `Unsupported file extension '${ext || "unknown"}'. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.`
+        });
+        return;
+      }
+      resolvedFileType = ext as DocumentFileType;
+    } else if (sourceType === "website") {
+      resolvedFileType = "html";
+    } else if (sourceType === "manual_note") {
+      resolvedFileType = "note";
+    } else if (sourceType === "file_upload") {
+      res.status(400).json({
+        error: "Missing or unsupported file format for upload. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT."
+      });
+      return;
+    } else {
+      resolvedFileType = "txt";
+    }
+
     const payload = content || fileBufferOrText || "";
     if (!payload && !sourceUrl) {
       res.status(400).json({ error: "Content or sourceUrl is required for ingestion" });
       return;
     }
 
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const result = await brandBrainIngestion.ingestContent({
-      brandId,
-      sourceType: sourceType || "file_upload",
-      sourceName: sourceName || fileName || "Uploaded Knowledge Document",
-      sourceUrl,
-      fileType: fileType || "txt",
-      fileName,
-      fileBufferOrText: payload,
-      trustLevel,
-      classification,
-      metadata
-    }, auth.user);
+    // Preserve 25 MB server-side limit
+    const payloadBytes = Buffer.isBuffer(payload)
+      ? payload.length
+      : typeof payload === "string"
+      ? Buffer.byteLength(payload, "utf-8")
+      : 0;
+    if (payloadBytes > 25 * 1024 * 1024) {
+      res.status(400).json({ error: "Payload exceeds 25 MB maximum upload limit." });
+      return;
+    }
+
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+    const result = await ingestion.ingestContent(
+      {
+        brandId,
+        sourceType: sourceType || "file_upload",
+        sourceName: sourceName || fileName || "Uploaded Knowledge Document",
+        sourceUrl,
+        fileType: resolvedFileType,
+        fileName,
+        fileBufferOrText: payload,
+        trustLevel,
+        classification,
+        metadata
+      },
+      auth.user,
+      { accessToken: req.token, isServiceRole: req.securityContext?.isServiceRole }
+    );
 
     await brandBrainRepo.logAuditAsync(
       brandId,
@@ -605,6 +686,17 @@ router.post("/:brandId/ingest", async (req: Request, res: Response) => {
 
     res.json(result);
   } catch (err: any) {
+    if (
+      err instanceof ParserSecurityError ||
+      err.name === "ParserSecurityError" ||
+      err.message?.includes("Unsupported file") ||
+      err.message?.includes("exceeds 25 MB") ||
+      err.message?.includes("Security rejection") ||
+      err.message?.includes("Invalid")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     res.status(500).json({ error: err.message || "Failed to ingest content" });
   }
 });
@@ -625,12 +717,14 @@ router.post("/:brandId/search", async (req: Request, res: Response) => {
       return;
     }
 
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const results = await brandBrainIngestion.searchBrandKnowledge(
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+    const results = await ingestion.searchBrandKnowledge(
       brandId,
       query,
       topK || 5,
-      minSimilarity !== undefined ? minSimilarity : 0.15
+      minSimilarity !== undefined ? minSimilarity : 0.15,
+      undefined,
+      { accessToken: req.token, isServiceRole: req.securityContext?.isServiceRole }
     );
 
     res.json({ results, query, brandId });
@@ -649,8 +743,11 @@ router.get("/:brandId/sources", async (req: Request, res: Response) => {
   }
 
   try {
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const sources = await brandBrainIngestion.getSourcesAsync(brandId);
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+    const sources = await ingestion.getSourcesAsync(brandId, {
+      accessToken: req.token,
+      isServiceRole: req.securityContext?.isServiceRole
+    });
     res.json({ sources });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to fetch sources" });
@@ -667,8 +764,11 @@ router.get("/:brandId/documents", async (req: Request, res: Response) => {
   }
 
   try {
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const documents = await brandBrainIngestion.getDocumentsAsync(brandId);
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+    const documents = await ingestion.getDocumentsAsync(brandId, {
+      accessToken: req.token,
+      isServiceRole: req.securityContext?.isServiceRole
+    });
     res.json({ documents });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to fetch documents" });
@@ -690,8 +790,11 @@ router.delete("/:brandId/documents/:documentId", async (req: Request, res: Respo
   }
 
   try {
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const success = await brandBrainIngestion.deleteDocument(brandId, documentId);
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+    const success = await ingestion.deleteDocument(brandId, documentId, {
+      accessToken: req.token,
+      isServiceRole: req.securityContext?.isServiceRole
+    });
     if (!success) {
       res.status(404).json({ error: "Document not found" });
       return;
@@ -725,8 +828,11 @@ router.get("/:brandId/chunks", async (req: Request, res: Response) => {
 
   try {
     const documentId = req.query.documentId as string | undefined;
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const chunks = await brandBrainIngestion.getChunksAsync(brandId, documentId);
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+    const chunks = await ingestion.getChunksAsync(brandId, documentId, {
+      accessToken: req.token,
+      isServiceRole: req.securityContext?.isServiceRole
+    });
     res.json({ chunks });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to fetch chunks" });
@@ -743,10 +849,16 @@ router.get("/:brandId/evidence", async (req: Request, res: Response) => {
   }
 
   try {
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
     const [claims, sources] = await Promise.all([
-      brandBrainIngestion.getEvidenceClaimsAsync(brandId),
-      brandBrainIngestion.getEvidenceSourcesAsync(brandId)
+      ingestion.getEvidenceClaimsAsync(brandId, {
+        accessToken: req.token,
+        isServiceRole: req.securityContext?.isServiceRole
+      }),
+      ingestion.getEvidenceSourcesAsync(brandId, {
+        accessToken: req.token,
+        isServiceRole: req.securityContext?.isServiceRole
+      })
     ]);
     res.json({ claims, sources });
   } catch (err: any) {
@@ -775,8 +887,11 @@ router.put("/:brandId/evidence/:claimId/status", async (req: Request, res: Respo
   }
 
   try {
-    const { brandBrainIngestion } = await import("../brand-brain/ingestion-service.ts");
-    const updated = await brandBrainIngestion.verifyClaimAsync(brandId, claimId, status, auth.user.id);
+    const ingestion = getBrandBrainIngestionService(req.token, req.securityContext?.isServiceRole);
+    const updated = await ingestion.verifyClaimAsync(brandId, claimId, status, auth.user.id, {
+      accessToken: req.token,
+      isServiceRole: req.securityContext?.isServiceRole
+    });
 
     await brandBrainRepo.logAuditAsync(
       brandId,

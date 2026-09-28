@@ -1,18 +1,35 @@
-import { createRequire } from "module";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 import { parse as parseCsvSync } from "csv-parse/sync";
+import * as pdfLibModule from "pdf-parse";
 import { DocumentFileType } from "../../types/index.ts";
 
-const nodeRequire =
-  typeof require !== "undefined"
-    ? require
-    : createRequire(
-        typeof import.meta !== "undefined" && import.meta.url
-          ? import.meta.url
-          : "file:///app/server.js"
-      );
-const pdfLib = nodeRequire("pdf-parse");
+let pdfLib: any = (pdfLibModule as any).default || pdfLibModule;
+
+/**
+ * Universal safe loader for PDF parsing engine ensuring Node CJS/ESM compatibility.
+ */
+async function resolvePdfLib(): Promise<any> {
+  if (pdfLib && (typeof pdfLib === "function" || pdfLib.PDFParse)) {
+    return pdfLib;
+  }
+  try {
+    const mod = await import("pdf-parse");
+    pdfLib = (mod as any).default || mod;
+    return pdfLib;
+  } catch (err: any) {
+    if (typeof require !== "undefined") {
+      try {
+        const mod = require("pdf-parse");
+        pdfLib = mod.default || mod;
+        return pdfLib;
+      } catch {
+        // Fall through
+      }
+    }
+    throw new Error(`Failed to load PDF parser: ${err.message}`);
+  }
+}
 
 export interface ParsedDocumentResult {
   title: string;
@@ -60,8 +77,9 @@ export class DocumentParsers {
         return this.parseHtml(buffer.toString("utf-8"), suggestedTitle);
       case "note":
       case "txt":
-      default:
         return this.parsePlainText(buffer.toString("utf-8"), fileType, suggestedTitle);
+      default:
+        throw new ParserSecurityError(`Unsupported file type: '${fileType}'. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.`);
     }
   }
 
@@ -107,8 +125,9 @@ export class DocumentParsers {
         return this.parseHtml(buffer.toString("utf-8"), suggestedTitle);
       case "note":
       case "txt":
-      default:
         return this.parsePlainText(buffer.toString("utf-8"), fileType, suggestedTitle);
+      default:
+        throw new ParserSecurityError(`Unsupported file type: '${fileType}'. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.`);
     }
   }
 
@@ -145,15 +164,16 @@ export class DocumentParsers {
     let pageCount = 1;
 
     try {
-      if (pdfLib.PDFParse) {
-        const instance = new pdfLib.PDFParse({ data: buffer });
+      const engine = await resolvePdfLib();
+      if (engine.PDFParse) {
+        const instance = new engine.PDFParse({ data: buffer });
         await instance.load();
         const res = await instance.getText();
         extractedText = res.text || "";
         pageCount = res.total || res.pages?.length || 1;
         await instance.destroy();
-      } else if (typeof pdfLib === "function") {
-        const data = await pdfLib(buffer);
+      } else if (typeof engine === "function") {
+        const data = await engine(buffer);
         extractedText = data.text || "";
         pageCount = data.numpages || 1;
       }

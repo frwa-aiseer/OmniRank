@@ -12,11 +12,12 @@ import {
   DocumentClassification,
   EvidenceVerificationStatus,
   SourceType,
-  DocumentFileType
+  DocumentFileType,
+  Brand,
 } from "../../types/index.ts";
 import { r2Storage } from "../storage/r2.ts";
 import { ContentSanitizer } from "./sanitizer.ts";
-import { DocumentParsers } from "./parsers.ts";
+import { DocumentParsers, ParserSecurityError } from "./parsers.ts";
 import { SemanticChunker } from "./chunker.ts";
 import { EvidenceExtractor } from "./evidence-extractor.ts";
 import { safeFetchWebsite } from "./ssrf.ts";
@@ -38,6 +39,7 @@ export class BrandBrainIngestionService {
   private repo: IBrandBrainRepository;
   private chunker = new SemanticChunker(400, 50);
   private embeddingProvider: EmbeddingProvider;
+  private authContext?: { accessToken?: string; isServiceRole?: boolean };
 
   // Local caching layer for synchronous accessors while keeping repository as primary persistent store
   private localSources: Map<string, KnowledgeSource> = new Map();
@@ -48,10 +50,12 @@ export class BrandBrainIngestionService {
 
   constructor(
     embeddingProvider: EmbeddingProvider = defaultEmbeddingProvider,
-    repository?: IBrandBrainRepository
+    repository?: IBrandBrainRepository,
+    authContext?: { accessToken?: string; isServiceRole?: boolean }
   ) {
     this.embeddingProvider = embeddingProvider;
-    this.repo = repository || createBrandBrainRepository();
+    this.authContext = authContext;
+    this.repo = repository || createBrandBrainRepository(authContext?.accessToken, authContext?.isServiceRole);
     const env = getServerEnv();
     if (!isLiveSupabaseConfigured() && (env.NODE_ENV === "test" || env.DEMO_MODE)) {
       this.seedDefaultKnowledge();
@@ -60,28 +64,89 @@ export class BrandBrainIngestionService {
 
   /**
    * Resolves and validates the organization ID for a given brand.
-   * Throws TenancyAuthorizationError on cross-tenant mismatch or unknown brand.
-   * Never falls back to arbitrary demo tenants in production.
+   * In live mode:
+   * Brand ID -> authenticated user context -> real Supabase Brand record -> actual organization_id
+   * Unknown or inaccessible Brand must fail. Never falls back to demo Maps or guessed organizations.
+   * Demo/test behavior remains only behind explicit DEMO_MODE or test environment.
    */
-  private resolveTenantOrganization(brandId: string, requestedOrgId?: string): string {
+  public async resolveTenantOrganization(
+    brandId: string,
+    requestedOrgId?: string,
+    user?: { id: string },
+    accessToken?: string,
+    isServiceRole?: boolean
+  ): Promise<{ organizationId: string; brand?: Brand | null }> {
+    const env = getServerEnv();
+
+    if (isLiveSupabaseConfigured()) {
+      const token = accessToken || this.authContext?.accessToken;
+      const serviceRole = isServiceRole ?? this.authContext?.isServiceRole;
+
+      // 1. Authenticated user context authorization check
+      if (user?.id && !serviceRole) {
+        const canAccess = await tenancyRepo.canAccessBrandAsync(brandId, user.id, token, serviceRole);
+        if (!canAccess) {
+          throw new TenancyAuthorizationError(
+            `Access denied: User ${user.id} is not authorized to access brand ${brandId}`,
+            "FORBIDDEN"
+          );
+        }
+      }
+
+      // 2. Query real Supabase Brand record
+      const brand = await tenancyRepo.getBrandByIdAsync(
+        { isAuthenticated: true, userId: user?.id, isServiceRole: serviceRole },
+        brandId,
+        token
+      );
+
+      if (!brand || !brand.organizationId) {
+        throw new TenancyAuthorizationError(
+          `Tenant resolution failed: Brand ${brandId} does not exist or has no associated organization. Never guessing a tenant.`,
+          "TENANT_NOT_FOUND"
+        );
+      }
+
+      // 3. Prevent cross-tenant mismatch
+      if (requestedOrgId && requestedOrgId !== brand.organizationId) {
+        throw new TenancyAuthorizationError(
+          `Cross-tenant violation: Brand ${brandId} belongs to organization ${brand.organizationId}, not ${requestedOrgId}`,
+          "FORBIDDEN"
+        );
+      }
+
+      return { organizationId: brand.organizationId, brand };
+    }
+
+    // Demo / test behavior remains only behind explicit DEMO_MODE or test environment
     const actualOrgId = tenancyRepo.resolveBrandOrganization(brandId, requestedOrgId);
     if (!actualOrgId) {
-      const env = getServerEnv();
       if ((env.NODE_ENV === "test" || env.DEMO_MODE) && requestedOrgId) {
-        return requestedOrgId;
+        return { organizationId: requestedOrgId, brand: tenancyRepo.getBrandRaw(brandId) };
       }
       throw new TenancyAuthorizationError(
         `Tenant resolution failed: Brand ${brandId} does not exist or has no associated organization. Never guessing a tenant.`,
         "TENANT_NOT_FOUND"
       );
     }
+
     if (requestedOrgId && requestedOrgId !== actualOrgId) {
       throw new TenancyAuthorizationError(
         `Cross-tenant violation: Brand ${brandId} belongs to organization ${actualOrgId}, not ${requestedOrgId}`,
         "FORBIDDEN"
       );
     }
-    return actualOrgId;
+
+    return { organizationId: actualOrgId, brand: tenancyRepo.getBrandRaw(brandId) };
+  }
+
+  private getActiveRepo(options?: { accessToken?: string; isServiceRole?: boolean }): IBrandBrainRepository {
+    if (options?.accessToken || options?.isServiceRole !== undefined) {
+      if (isLiveSupabaseConfigured()) {
+        return createBrandBrainRepository(options.accessToken, options.isServiceRole);
+      }
+    }
+    return this.repo;
   }
 
   /**
@@ -99,22 +164,32 @@ export class BrandBrainIngestionService {
    */
   async ingestContent(
     input: IngestionInput,
-    user?: { id: string; name: string }
+    user?: { id: string; name: string },
+    options?: { accessToken?: string; isServiceRole?: boolean }
   ): Promise<IngestionResult> {
     const brandId = input.brandId;
-    const organizationId = this.resolveTenantOrganization(brandId, input.organizationId);
+    const token = options?.accessToken || this.authContext?.accessToken;
+    const isServiceRole = options?.isServiceRole ?? this.authContext?.isServiceRole;
+
+    const { organizationId, brand: resolvedBrand } = await this.resolveTenantOrganization(
+      brandId,
+      input.organizationId,
+      user,
+      token,
+      isServiceRole
+    );
+
+    const activeRepo = this.getActiveRepo(options);
 
     // 1. Resolve source text and binary buffer
     let rawBuffer: Buffer;
     let rawText: string;
-    let fileType: DocumentFileType = input.fileType || (input.sourceType === "website" ? "html" : "note");
 
     // Handle live website ingestion with SSRF protection
     if (input.sourceType === "website" && input.sourceUrl && (!input.fileBufferOrText || input.fileBufferOrText.length === 0)) {
       const webResult = await safeFetchWebsite(input.sourceUrl);
       rawText = webResult.cleanText;
       rawBuffer = Buffer.from(webResult.bodyText, "utf-8");
-      fileType = "html";
     } else {
       rawBuffer = Buffer.isBuffer(input.fileBufferOrText)
         ? input.fileBufferOrText
@@ -124,12 +199,46 @@ export class BrandBrainIngestionService {
       rawText = rawBuffer.toString("utf-8");
     }
 
+    // Preserve 25 MB server-side limit
+    if (rawBuffer.byteLength > 25 * 1024 * 1024) {
+      throw new ParserSecurityError("File exceeds 25 MB maximum upload limit.");
+    }
+
+    // Resolve file type strictly - do not silently treat unknown file types as TXT
+    const ALLOWED_EXTENSIONS = ["pdf", "docx", "xlsx", "csv", "md", "html", "txt"] as const;
+    let fileType: DocumentFileType;
+    if (input.fileType) {
+      const normalized = String(input.fileType).toLowerCase();
+      if (!ALLOWED_EXTENSIONS.includes(normalized as any) && normalized !== "note") {
+        throw new ParserSecurityError(
+          `Unsupported file type '${input.fileType}'. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.`
+        );
+      }
+      fileType = normalized as DocumentFileType;
+    } else if (input.fileName && input.fileName.includes(".")) {
+      const ext = input.fileName.split(".").pop()?.toLowerCase();
+      if (!ext || !ALLOWED_EXTENSIONS.includes(ext as any)) {
+        throw new ParserSecurityError(
+          `Unsupported file extension '${ext || "unknown"}'. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.`
+        );
+      }
+      fileType = ext as DocumentFileType;
+    } else if (input.sourceType === "website") {
+      fileType = "html";
+    } else if (input.sourceType === "manual_note") {
+      fileType = "note";
+    } else if (input.sourceType === "file_upload") {
+      throw new ParserSecurityError("Unsupported or missing file type. Allowed formats: PDF, DOCX, XLSX, CSV, MD, HTML, TXT.");
+    } else {
+      fileType = "txt";
+    }
+
     // 2. Content Hashing & Brand-Scoped Deduplication
     const contentHash = createHash("sha256").update(rawBuffer).digest("hex");
 
-    const existingDoc = await this.repo.findDocumentByHash(brandId, contentHash);
+    const existingDoc = await activeRepo.findDocumentByHash(brandId, contentHash);
     if (existingDoc) {
-      const existingSource = (await this.repo.getSource(existingDoc.sourceId, brandId)) || {
+      const existingSource = (await activeRepo.getSource(existingDoc.sourceId, brandId)) || {
         id: existingDoc.sourceId,
         brandId,
         organizationId,
@@ -141,8 +250,8 @@ export class BrandBrainIngestionService {
         createdAt: existingDoc.createdAt,
         updatedAt: existingDoc.updatedAt
       };
-      const existingChunks = await this.repo.listChunks(brandId, existingDoc.id);
-      const allClaims = await this.repo.listEvidenceClaims(brandId);
+      const existingChunks = await activeRepo.listChunks(brandId, existingDoc.id);
+      const allClaims = await activeRepo.listEvidenceClaims(brandId);
       const existingClaims = allClaims.filter((c) =>
         c.sources.some((s) => s.documentId === existingDoc.id)
       );
@@ -164,7 +273,7 @@ export class BrandBrainIngestionService {
     const sanitization = ContentSanitizer.sanitize(parsed.extractedText);
 
     // 5. Trust Level Taxonomy Inference
-    const brandRecord = tenancyRepo.getBrandRaw(brandId);
+    const brandRecord = resolvedBrand || (isLiveSupabaseConfigured() ? null : tenancyRepo.getBrandRaw(brandId));
     const trustLevel =
       input.trustLevel ||
       this.inferTrustLevel(
@@ -174,7 +283,7 @@ export class BrandBrainIngestionService {
       );
 
     // 6. Source Registration / Lookup
-    let source = await this.repo.findMatchingSource(brandId, input.sourceName, input.sourceType);
+    let source = await activeRepo.findMatchingSource(brandId, input.sourceName, input.sourceType);
     if (!source) {
       const sourceId = `src-${randomUUID().slice(0, 8)}`;
       source = {
@@ -190,12 +299,12 @@ export class BrandBrainIngestionService {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
-      source = await this.repo.saveSource(source);
+      source = await activeRepo.saveSource(source);
       this.localSources.set(source.id, source);
     }
 
     // 7. Check for source revision update (same source, updated content)
-    const prevDoc = await this.repo.findLatestDocumentBySource(brandId, source.id);
+    const prevDoc = await activeRepo.findLatestDocumentBySource(brandId, source.id);
     const revision = prevDoc ? (prevDoc.revision || 1) + 1 : 1;
 
     // 8. R2 Object Storage with Strict Tenant Path
@@ -257,12 +366,12 @@ export class BrandBrainIngestionService {
     newDoc.chunkCount = rawChunks.length;
 
     // Save Document in repository
-    const savedDoc = await this.repo.saveDocument(newDoc);
+    const savedDoc = await activeRepo.saveDocument(newDoc);
     this.localDocuments.set(savedDoc.id, savedDoc);
 
     // 12. Vector Embeddings Generation (768-dim)
     // Check if any chunks can reuse embeddings from previous revisions with identical contentHash
-    const prevChunks = prevDoc ? await this.repo.listChunks(brandId, prevDoc.id) : [];
+    const prevChunks = prevDoc ? await activeRepo.listChunks(brandId, prevDoc.id) : [];
     const prevChunkMap = new Map(prevChunks.map((c) => [c.contentHash, c.embedding]));
 
     const chunkTextsToEmbed: string[] = [];
@@ -308,7 +417,7 @@ export class BrandBrainIngestionService {
     }
 
     // Save Chunks in repository
-    await this.repo.saveChunks(generatedChunks);
+    await activeRepo.saveChunks(generatedChunks);
     for (const chk of generatedChunks) {
       this.localChunks.set(chk.id, chk);
     }
@@ -330,7 +439,7 @@ export class BrandBrainIngestionService {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    await this.repo.saveEvidenceSource(evSource);
+    await activeRepo.saveEvidenceSource(evSource);
     this.localEvidenceSources.set(evSource.id, evSource);
 
     for (const rc of rawChunks) {
@@ -375,7 +484,7 @@ export class BrandBrainIngestionService {
     }
 
     if (generatedClaims.length > 0) {
-      await this.repo.saveEvidenceClaims(generatedClaims);
+      await activeRepo.saveEvidenceClaims(generatedClaims);
       for (const c of generatedClaims) {
         this.localEvidenceClaims.set(c.id, c);
       }
@@ -399,7 +508,8 @@ export class BrandBrainIngestionService {
     query: string,
     limit: number = 5,
     threshold: number = 0.3,
-    organizationId?: string
+    organizationId?: string,
+    options?: { accessToken?: string; isServiceRole?: boolean }
   ): Promise<SemanticSearchResult[]> {
     if (!query || !query.trim()) return [];
 
@@ -407,7 +517,8 @@ export class BrandBrainIngestionService {
     const queryEmbedding = queryEmbeddings[0];
     if (!queryEmbedding) return [];
 
-    const similar = await this.repo.querySimilarChunks(
+    const activeRepo = this.getActiveRepo(options);
+    const similar = await activeRepo.querySimilarChunks(
       brandId,
       queryEmbedding,
       threshold,
@@ -432,9 +543,11 @@ export class BrandBrainIngestionService {
     brandId: string,
     claimId: string,
     status: EvidenceVerificationStatus,
-    verifiedBy?: string
+    verifiedBy?: string,
+    options?: { accessToken?: string; isServiceRole?: boolean }
   ): Promise<EvidenceClaim> {
-    const updated = await this.repo.updateClaimVerification(claimId, brandId, status, verifiedBy);
+    const activeRepo = this.getActiveRepo(options);
+    const updated = await activeRepo.updateClaimVerification(claimId, brandId, status, verifiedBy);
     this.localEvidenceClaims.set(updated.id, updated);
     return updated;
   }
@@ -460,8 +573,13 @@ export class BrandBrainIngestionService {
     return claim;
   }
 
-  async deleteDocument(brandId: string, documentId: string): Promise<boolean> {
-    const ok = await this.repo.deleteDocument(documentId, brandId);
+  async deleteDocument(
+    brandId: string,
+    documentId: string,
+    options?: { accessToken?: string; isServiceRole?: boolean }
+  ): Promise<boolean> {
+    const activeRepo = this.getActiveRepo(options);
+    const ok = await activeRepo.deleteDocument(documentId, brandId);
     this.localDocuments.delete(documentId);
     for (const [id, chk] of this.localChunks.entries()) {
       if (chk.documentId === documentId && chk.brandId === brandId) {
@@ -477,16 +595,18 @@ export class BrandBrainIngestionService {
     return Array.from(this.localSources.values()).filter((s) => s.brandId === brandId);
   }
 
-  async getSourcesAsync(brandId: string): Promise<KnowledgeSource[]> {
-    return await this.repo.listSources(brandId);
+  async getSourcesAsync(brandId: string, options?: { accessToken?: string; isServiceRole?: boolean }): Promise<KnowledgeSource[]> {
+    const activeRepo = this.getActiveRepo(options);
+    return await activeRepo.listSources(brandId);
   }
 
   getDocuments(brandId: string): KnowledgeDocument[] {
     return Array.from(this.localDocuments.values()).filter((d) => d.brandId === brandId);
   }
 
-  async getDocumentsAsync(brandId: string): Promise<KnowledgeDocument[]> {
-    return await this.repo.listDocuments(brandId);
+  async getDocumentsAsync(brandId: string, options?: { accessToken?: string; isServiceRole?: boolean }): Promise<KnowledgeDocument[]> {
+    const activeRepo = this.getActiveRepo(options);
+    return await activeRepo.listDocuments(brandId);
   }
 
   getChunks(brandId: string, documentId?: string): KnowledgeChunk[] {
@@ -495,24 +615,27 @@ export class BrandBrainIngestionService {
     );
   }
 
-  async getChunksAsync(brandId: string, documentId?: string): Promise<KnowledgeChunk[]> {
-    return await this.repo.listChunks(brandId, documentId);
+  async getChunksAsync(brandId: string, documentId?: string, options?: { accessToken?: string; isServiceRole?: boolean }): Promise<KnowledgeChunk[]> {
+    const activeRepo = this.getActiveRepo(options);
+    return await activeRepo.listChunks(brandId, documentId);
   }
 
   getEvidenceSources(brandId: string): EvidenceSource[] {
     return Array.from(this.localEvidenceSources.values()).filter((s) => s.brandId === brandId);
   }
 
-  async getEvidenceSourcesAsync(brandId: string): Promise<EvidenceSource[]> {
-    return await this.repo.listEvidenceSources(brandId);
+  async getEvidenceSourcesAsync(brandId: string, options?: { accessToken?: string; isServiceRole?: boolean }): Promise<EvidenceSource[]> {
+    const activeRepo = this.getActiveRepo(options);
+    return await activeRepo.listEvidenceSources(brandId);
   }
 
   getEvidenceClaims(brandId: string): EvidenceClaim[] {
     return Array.from(this.localEvidenceClaims.values()).filter((c) => c.brandId === brandId);
   }
 
-  async getEvidenceClaimsAsync(brandId: string): Promise<EvidenceClaim[]> {
-    return await this.repo.listEvidenceClaims(brandId);
+  async getEvidenceClaimsAsync(brandId: string, options?: { accessToken?: string; isServiceRole?: boolean }): Promise<EvidenceClaim[]> {
+    const activeRepo = this.getActiveRepo(options);
+    return await activeRepo.listEvidenceClaims(brandId);
   }
 
   // --- Trust Taxonomy & Helper Logic (Requirement 8) ---
@@ -707,3 +830,23 @@ export class BrandBrainIngestionService {
 }
 
 export const brandBrainIngestion = new BrandBrainIngestionService();
+
+export function createBrandBrainIngestionService(
+  accessToken?: string,
+  isServiceRole?: boolean,
+  embeddingProvider: EmbeddingProvider = defaultEmbeddingProvider
+): BrandBrainIngestionService {
+  const repo = createBrandBrainRepository(accessToken, isServiceRole);
+  return new BrandBrainIngestionService(embeddingProvider, repo, { accessToken, isServiceRole });
+}
+
+export function getBrandBrainIngestionService(
+  accessToken?: string,
+  isServiceRole?: boolean,
+  embeddingProvider: EmbeddingProvider = defaultEmbeddingProvider
+): BrandBrainIngestionService {
+  if (isLiveSupabaseConfigured()) {
+    return createBrandBrainIngestionService(accessToken, isServiceRole, embeddingProvider);
+  }
+  return brandBrainIngestion;
+}

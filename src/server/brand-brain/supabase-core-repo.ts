@@ -10,6 +10,10 @@ import {
   BrandCompetitor,
   BrandAuditLog,
   BrandBrainKnowledge,
+  KnowledgeSource,
+  KnowledgeDocument,
+  EvidenceSource,
+  EvidenceClaim,
 } from "../../types/index.ts";
 import { createScopedUserSupabaseClient, getAdminSupabaseClient } from "../supabase/client.ts";
 
@@ -71,6 +75,10 @@ export class SupabaseBrandBrainCoreRepository {
       policiesRes,
       competitorsRes,
       auditLogsRes,
+      sourcesRes,
+      documentsRes,
+      evidenceSourcesRes,
+      evidenceClaimsRes,
     ] = await Promise.all([
       client.from("brand_profiles").select("*").eq("brand_id", brandId).maybeSingle(),
       client.from("brand_products").select("*").eq("brand_id", brandId).order("created_at", { ascending: false }),
@@ -81,11 +89,19 @@ export class SupabaseBrandBrainCoreRepository {
       client.from("brand_policies").select("*").eq("brand_id", brandId).order("created_at", { ascending: false }),
       client.from("brand_competitors").select("*").eq("brand_id", brandId).order("created_at", { ascending: false }),
       client.from("brand_audit_logs").select("*").eq("brand_id", brandId).order("created_at", { ascending: false }).limit(50),
+      client.from("knowledge_sources").select("*").eq("brand_id", brandId).order("created_at", { ascending: false }),
+      client.from("knowledge_documents").select("*").eq("brand_id", brandId).order("created_at", { ascending: false }),
+      client.from("evidence_sources").select("*").eq("brand_id", brandId).order("created_at", { ascending: false }),
+      client.from("evidence_claims").select("*, evidence_claim_sources(*)").eq("brand_id", brandId).order("created_at", { ascending: false }),
     ]);
 
     if (profileRes.error) throw new Error(`[Supabase Core Repo] getBrandBrain profile error: ${profileRes.error.message}`);
     if (productsRes.error) throw new Error(`[Supabase Core Repo] getBrandBrain products error: ${productsRes.error.message}`);
     if (audiencesRes.error) throw new Error(`[Supabase Core Repo] getBrandBrain audiences error: ${audiencesRes.error.message}`);
+    if (sourcesRes.error) throw new Error(`[Supabase Core Repo] getBrandBrain sources error: ${sourcesRes.error.message}`);
+    if (documentsRes.error) throw new Error(`[Supabase Core Repo] getBrandBrain documents error: ${documentsRes.error.message}`);
+    if (evidenceSourcesRes.error) throw new Error(`[Supabase Core Repo] getBrandBrain evidenceSources error: ${evidenceSourcesRes.error.message}`);
+    if (evidenceClaimsRes.error) throw new Error(`[Supabase Core Repo] getBrandBrain evidenceClaims error: ${evidenceClaimsRes.error.message}`);
 
     const profile: BrandProfileDetails = profileRes.data
       ? {
@@ -244,11 +260,84 @@ export class SupabaseBrandBrainCoreRepository {
       competitors
     );
 
-    const { brandBrainIngestion } = await import("./ingestion-service.ts");
-    const sources = brandBrainIngestion.getSources(brandId);
-    const documents = brandBrainIngestion.getDocuments(brandId);
-    const evidenceClaims = brandBrainIngestion.getEvidenceClaims(brandId);
-    const evidenceSources = brandBrainIngestion.getEvidenceSources(brandId);
+    const sources: KnowledgeSource[] = (sourcesRes.data || []).map((row: any) => ({
+      id: row.id,
+      brandId: row.brand_id,
+      organizationId: row.organization_id,
+      name: row.name,
+      type: row.type,
+      sourceUrl: row.source_url,
+      trustLevel: row.trust_level,
+      status: row.status,
+      config: row.config || {},
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+
+    const documents: KnowledgeDocument[] = (documentsRes.data || []).map((row: any) => ({
+      id: row.id,
+      brandId: row.brand_id,
+      organizationId: row.organization_id,
+      sourceId: row.source_id,
+      title: row.title,
+      url: row.url,
+      fileType: row.file_type,
+      storageKey: row.storage_key,
+      fileSizeBytes: row.file_size_bytes,
+      contentHash: row.content_hash,
+      revision: row.revision,
+      extractedText: row.extracted_text,
+      documentMetadata: row.document_metadata || {},
+      parsingStatus: row.parsing_status,
+      trustLevel: row.trust_level,
+      classification: row.classification,
+      chunkCount: row.chunk_count,
+      hasUntrustedDirectives: row.has_untrusted_directives,
+      sanitizationNotes: row.sanitization_notes || [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+
+    const evidenceSources: EvidenceSource[] = (evidenceSourcesRes.data || []).map((row: any) => ({
+      id: row.id,
+      brandId: row.brand_id,
+      organizationId: row.organization_id,
+      name: row.name,
+      url: row.url,
+      publisher: row.publisher,
+      publicationDate: row.publication_date,
+      trustScore: row.trust_score,
+      isPrimarySource: row.is_primary_source,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+
+    const evidenceClaims: EvidenceClaim[] = (evidenceClaimsRes.data || []).map((row: any) => ({
+      id: row.id,
+      brandId: row.brand_id,
+      organizationId: row.organization_id,
+      claimText: row.claim_text,
+      claimType: row.claim_type,
+      verificationStatus: row.verification_status,
+      confidenceScore: parseFloat(row.confidence_score) || 0,
+      extractedEntities: row.extracted_entities || {},
+      verifiedBy: row.verified_by,
+      verifiedAt: row.verified_at,
+      validFrom: row.valid_from,
+      validUntil: row.valid_until,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      sources: (row.evidence_claim_sources || []).map((s: any) => ({
+        id: s.id,
+        claimId: s.claim_id,
+        sourceId: s.source_id,
+        documentId: s.document_id,
+        chunkId: s.chunk_id,
+        exactQuote: s.exact_quote,
+        pageOrSection: s.page_or_section,
+        createdAt: s.created_at,
+      })),
+    }));
 
     return {
       completenessScore,
