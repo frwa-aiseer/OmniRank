@@ -33,8 +33,8 @@ async function resolveAuthContext(req: Request, brandId: string) {
     };
   }
 
-  const isMember = await tenancyRepo.isBrandMemberAsync(brandId, userId, req.token);
-  if (!isMember) {
+  const canAccess = await tenancyRepo.canAccessBrandAsync(brandId, userId, req.token, ctx.isServiceRole);
+  if (!canAccess) {
     return { error: "Forbidden: Not authorized for this brand", status: 403, user: null, orgRole: null, brandRole: null };
   }
 
@@ -44,9 +44,13 @@ async function resolveAuthContext(req: Request, brandId: string) {
   };
 
   try {
-    const brand = await tenancyRepo.getBrandByIdAsync(ctx, brandId, req.token);
-    const orgRole: OrgRole = brand ? (tenancyRepo.getOrgRole(brand.organizationId, userId) || "member") : "member";
-    const brandRole: BrandRole = tenancyRepo.getBrandRole(brandId, userId) || "viewer";
+    const orgId = await tenancyRepo.resolveBrandOrganizationAsync(brandId, req.token, ctx.isServiceRole);
+    const orgRole: OrgRole = orgId
+      ? ((await tenancyRepo.getOrgRoleAsync(orgId, userId, req.token, ctx.isServiceRole)) || "member")
+      : "member";
+    const brandRole: BrandRole =
+      (await tenancyRepo.getBrandRoleAsync(brandId, userId, req.token, ctx.isServiceRole)) || "viewer";
+
     return { error: null, status: 200, user, orgRole, brandRole };
   } catch {
     return { error: "Forbidden: Not authorized for this brand", status: 403, user: null, orgRole: null, brandRole: null };

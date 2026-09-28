@@ -147,6 +147,14 @@ export class TenancyRepository {
     return false;
   }
 
+  public canAccessBrand(brandId: string, userId?: string): boolean {
+    return this.isBrandMember(brandId, userId);
+  }
+
+  public isBrandAccessible(brandId: string, userId?: string): boolean {
+    return this.canAccessBrand(brandId, userId);
+  }
+
   public getBrandRole(brandId: string, userId?: string): BrandRole | null {
     if (!userId) return null;
     const member = Array.from(this.brandMembers.values()).find(
@@ -931,16 +939,37 @@ export class TenancyRepository {
     return this.resolveBrandOrganization(brandId);
   }
 
-  public async isBrandMemberAsync(brandId: string, userId: string, accessToken?: string): Promise<boolean> {
+  public async getOrgRoleAsync(orgId: string, userId?: string, accessToken?: string, isServiceRole?: boolean): Promise<OrgRole | null> {
+    if (!userId) return null;
     if (isLiveSupabaseConfigured()) {
-      try {
-        const members = await supabaseTenancyRepo.getBrandMembers(brandId, accessToken);
-        return members.some((m) => m.userId === userId);
-      } catch {
-        return false;
-      }
+      return await supabaseTenancyRepo.getOrgRole(userId, orgId, accessToken, isServiceRole);
     }
-    return this.isBrandMember(brandId, userId);
+    return this.getOrgRole(orgId, userId);
+  }
+
+  public async getBrandRoleAsync(brandId: string, userId?: string, accessToken?: string, isServiceRole?: boolean): Promise<BrandRole | null> {
+    if (!userId) return null;
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseTenancyRepo.getBrandRole(userId, brandId, accessToken, isServiceRole);
+    }
+    return this.getBrandRole(brandId, userId);
+  }
+
+  public async canAccessBrandAsync(brandId: string, userId?: string, accessToken?: string, isServiceRole?: boolean): Promise<boolean> {
+    if (isServiceRole) return true;
+    if (!userId) return false;
+    if (isLiveSupabaseConfigured()) {
+      return await supabaseTenancyRepo.canAccessBrand(userId, brandId, accessToken, isServiceRole);
+    }
+    return this.canAccessBrand(brandId, userId);
+  }
+
+  public async isBrandAccessibleAsync(brandId: string, userId?: string, accessToken?: string, isServiceRole?: boolean): Promise<boolean> {
+    return this.canAccessBrandAsync(brandId, userId, accessToken, isServiceRole);
+  }
+
+  public async isBrandMemberAsync(brandId: string, userId: string, accessToken?: string, isServiceRole?: boolean): Promise<boolean> {
+    return this.canAccessBrandAsync(brandId, userId, accessToken, isServiceRole);
   }
 }
 

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import fs from "fs";
 import path from "path";
 import { TenancyRepository, SecurityContext, TenancyAuthorizationError } from "../server/auth/tenancy.ts";
+import { SupabaseTenancyRepository } from "../server/auth/supabase-tenancy.ts";
 
 describe("OR-P02 Authentication, Tenancy and RLS Tests", () => {
   let repo: TenancyRepository;
@@ -282,5 +283,272 @@ describe("OR-P02 Authentication, Tenancy and RLS Tests", () => {
         expect(block).not.toMatch(/SET\s+search_path\s*=\s*public/i);
       }
     }
+  });
+
+  it("should prove SupabaseTenancyRepository correctly calls create_organization_with_owner RPC with (_name, _slug) and consumes nested organization & member response", async () => {
+    const supabaseTenancy = new SupabaseTenancyRepository();
+    let rpcMethodCalled = "";
+    let rpcArgsPassed: Record<string, unknown> | null = null;
+
+    const mockOrgId = "11111111-1111-4000-8000-111111111111";
+    const mockMemberId = "22222222-2222-4000-8000-222222222222";
+    const mockUserId = "aaaaaaaa-aaaa-4000-8000-aaaaaaaaaaaa";
+
+    const mockClient: any = {
+      rpc: async (method: string, args: Record<string, unknown>) => {
+        rpcMethodCalled = method;
+        rpcArgsPassed = args;
+        return {
+          data: {
+            organization: {
+              id: mockOrgId,
+              name: args._name,
+              slug: args._slug,
+              created_by: mockUserId,
+              created_at: "2026-09-18T12:00:00.000Z",
+              updated_at: "2026-09-18T12:00:00.000Z",
+            },
+            member: {
+              id: mockMemberId,
+              organization_id: mockOrgId,
+              user_id: mockUserId,
+              role: "owner",
+              created_at: "2026-09-18T12:00:00.000Z",
+            },
+          },
+          error: null,
+        };
+      },
+    };
+
+    (supabaseTenancy as any).getClient = () => mockClient;
+
+    const result = await supabaseTenancy.createOrganization("Omni Enterprise", "omni-enterprise", mockUserId);
+
+    // 1. Verify RPC name and exact canonical argument contract (_name, _slug)
+    expect(rpcMethodCalled).toBe("create_organization_with_owner");
+    expect(rpcArgsPassed).toEqual({
+      _name: "Omni Enterprise",
+      _slug: "omni-enterprise",
+    });
+
+    // 2. Verify properly mapped Organization entity
+    expect(result.org.id).toBe(mockOrgId);
+    expect(result.org.name).toBe("Omni Enterprise");
+    expect(result.org.slug).toBe("omni-enterprise");
+    expect(result.org.createdBy).toBe(mockUserId);
+    expect(result.org.createdAt).toBe("2026-09-18T12:00:00.000Z");
+
+    // 3. Verify properly mapped OrganizationMember entity
+    expect(result.member.id).toBe(mockMemberId);
+    expect(result.member.organizationId).toBe(mockOrgId);
+    expect(result.member.userId).toBe(mockUserId);
+    expect(result.member.role).toBe("owner");
+    expect(result.member.createdAt).toBe("2026-09-18T12:00:00.000Z");
+  });
+
+  it("should handle error when create_organization_with_owner RPC encounters database failure", async () => {
+    const supabaseTenancy = new SupabaseTenancyRepository();
+    const mockClient: any = {
+      rpc: async () => {
+        return {
+          data: null,
+          error: { message: "duplicate key value violates unique constraint" },
+        };
+      },
+    };
+
+    (supabaseTenancy as any).getClient = () => mockClient;
+
+    await expect(
+      supabaseTenancy.createOrganization("Duplicate Org", "duplicate-org", userAlphaId)
+    ).rejects.toThrow("[Supabase Tenancy] create_organization_with_owner RPC failed: duplicate key value violates unique constraint");
+  });
+
+  describe("Real Live Role Resolution & Brand Access (Owner, Admin, Strategist, Writer, Reviewer, Viewer, Unassigned)", () => {
+    const orgId = "11111111-1111-4000-8000-111111111111";
+    const brandId = "22222222-2222-4000-8000-222222222222";
+
+    const ownerUserId = "user-owner-001";
+    const adminUserId = "user-admin-002";
+    const strategistUserId = "user-strategist-003";
+    const writerUserId = "user-writer-004";
+    const reviewerUserId = "user-reviewer-005";
+    const viewerUserId = "user-viewer-006";
+    const orgMemberOnlyUserId = "user-member-unassigned-007";
+    const completelyUnassignedUserId = "user-unassigned-999";
+
+    // Setup mock Supabase tables
+    function createMockSupabaseClient() {
+      const orgMembersTable = [
+        { organization_id: orgId, user_id: ownerUserId, role: "owner" },
+        { organization_id: orgId, user_id: adminUserId, role: "admin" },
+        { organization_id: orgId, user_id: strategistUserId, role: "member" },
+        { organization_id: orgId, user_id: writerUserId, role: "member" },
+        { organization_id: orgId, user_id: reviewerUserId, role: "member" },
+        { organization_id: orgId, user_id: viewerUserId, role: "member" },
+        { organization_id: orgId, user_id: orgMemberOnlyUserId, role: "member" },
+      ];
+
+      const brandMembersTable = [
+        { brand_id: brandId, user_id: strategistUserId, role: "strategist" },
+        { brand_id: brandId, user_id: writerUserId, role: "writer" },
+        { brand_id: brandId, user_id: reviewerUserId, role: "reviewer" },
+        { brand_id: brandId, user_id: viewerUserId, role: "viewer" },
+        // Notice: Owner and Admin DO NOT have explicit brand_members rows!
+      ];
+
+      const brandsTable = [
+        { id: brandId, organization_id: orgId, name: "Omni Test Brand" },
+      ];
+
+      return {
+        from: (table: string) => {
+          let filters: Record<string, any> = {};
+          const queryBuilder: any = {
+            select: () => queryBuilder,
+            eq: (col: string, val: any) => {
+              filters[col] = val;
+              return queryBuilder;
+            },
+            maybeSingle: async () => {
+              if (table === "brands") {
+                const found = brandsTable.find((b) => !filters.id || b.id === filters.id);
+                return { data: found || null, error: null };
+              }
+              if (table === "organization_members") {
+                const found = orgMembersTable.find(
+                  (om) =>
+                    (!filters.organization_id || om.organization_id === filters.organization_id) &&
+                    (!filters.user_id || om.user_id === filters.user_id)
+                );
+                return { data: found || null, error: null };
+              }
+              if (table === "brand_members") {
+                const found = brandMembersTable.find(
+                  (bm) =>
+                    (!filters.brand_id || bm.brand_id === filters.brand_id) &&
+                    (!filters.user_id || bm.user_id === filters.user_id)
+                );
+                return { data: found || null, error: null };
+              }
+              return { data: null, error: null };
+            },
+          };
+          return queryBuilder;
+        },
+      };
+    }
+
+    it("SupabaseTenancyRepository: correctly resolves getOrgRole for all roles and unassigned user", async () => {
+      const repo = new SupabaseTenancyRepository();
+      (repo as any).getClient = () => createMockSupabaseClient();
+
+      expect(await repo.getOrgRole(ownerUserId, orgId)).toBe("owner");
+      expect(await repo.getOrgRole(adminUserId, orgId)).toBe("admin");
+      expect(await repo.getOrgRole(strategistUserId, orgId)).toBe("member");
+      expect(await repo.getOrgRole(writerUserId, orgId)).toBe("member");
+      expect(await repo.getOrgRole(reviewerUserId, orgId)).toBe("member");
+      expect(await repo.getOrgRole(viewerUserId, orgId)).toBe("member");
+      expect(await repo.getOrgRole(orgMemberOnlyUserId, orgId)).toBe("member");
+      expect(await repo.getOrgRole(completelyUnassignedUserId, orgId)).toBeNull();
+    });
+
+    it("SupabaseTenancyRepository: correctly resolves getBrandRole with Owner/Admin inheritance and explicit roles", async () => {
+      const repo = new SupabaseTenancyRepository();
+      (repo as any).getClient = () => createMockSupabaseClient();
+
+      // Owner & Admin inherit "strategist" without explicit brand_members row
+      expect(await repo.getBrandRole(ownerUserId, brandId)).toBe("strategist");
+      expect(await repo.getBrandRole(adminUserId, brandId)).toBe("strategist");
+
+      // Explicit brand roles
+      expect(await repo.getBrandRole(strategistUserId, brandId)).toBe("strategist");
+      expect(await repo.getBrandRole(writerUserId, brandId)).toBe("writer");
+      expect(await repo.getBrandRole(reviewerUserId, brandId)).toBe("reviewer");
+      expect(await repo.getBrandRole(viewerUserId, brandId)).toBe("viewer");
+
+      // Member not assigned to brand -> null
+      expect(await repo.getBrandRole(orgMemberOnlyUserId, brandId)).toBeNull();
+
+      // Completely unassigned user -> null
+      expect(await repo.getBrandRole(completelyUnassignedUserId, brandId)).toBeNull();
+    });
+
+    it("SupabaseTenancyRepository: canAccessBrand allows Owner/Admin and explicit brand members, rejecting unassigned", async () => {
+      const repo = new SupabaseTenancyRepository();
+      (repo as any).getClient = () => createMockSupabaseClient();
+
+      // Owner & Admin have access
+      expect(await repo.canAccessBrand(ownerUserId, brandId)).toBe(true);
+      expect(await repo.canAccessBrand(adminUserId, brandId)).toBe(true);
+
+      // Explicit brand members have access
+      expect(await repo.canAccessBrand(strategistUserId, brandId)).toBe(true);
+      expect(await repo.canAccessBrand(writerUserId, brandId)).toBe(true);
+      expect(await repo.canAccessBrand(reviewerUserId, brandId)).toBe(true);
+      expect(await repo.canAccessBrand(viewerUserId, brandId)).toBe(true);
+
+      // Org member without explicit brand assignment cannot access brand
+      expect(await repo.canAccessBrand(orgMemberOnlyUserId, brandId)).toBe(false);
+
+      // Unassigned user cannot access brand
+      expect(await repo.canAccessBrand(completelyUnassignedUserId, brandId)).toBe(false);
+
+      // isBrandAccessible alias behaves identically
+      expect(await repo.isBrandAccessible(ownerUserId, brandId)).toBe(true);
+      expect(await repo.isBrandAccessible(completelyUnassignedUserId, brandId)).toBe(false);
+    });
+
+    it("TenancyRepository: in-memory and async methods support all role types and Owner/Admin inheritance", async () => {
+      const memoryRepo = new TenancyRepository();
+
+      // Create Org
+      const ownerCtx: SecurityContext = { userId: ownerUserId, isAuthenticated: true };
+      const { org } = memoryRepo.createOrganization(ownerCtx, "Memory Org", "memory-org");
+      const brand = memoryRepo.createBrand(ownerCtx, org.id, "Memory Brand", "mem-brand", "mem.com");
+
+      // Add Admin
+      memoryRepo.addOrganizationMember(ownerCtx, org.id, adminUserId, "admin");
+
+      // Add Members
+      memoryRepo.addOrganizationMember(ownerCtx, org.id, strategistUserId, "member");
+      memoryRepo.addOrganizationMember(ownerCtx, org.id, writerUserId, "member");
+      memoryRepo.addOrganizationMember(ownerCtx, org.id, reviewerUserId, "member");
+      memoryRepo.addOrganizationMember(ownerCtx, org.id, viewerUserId, "member");
+      memoryRepo.addOrganizationMember(ownerCtx, org.id, orgMemberOnlyUserId, "member");
+
+      // Add Brand Memberships
+      memoryRepo.addBrandMember(ownerCtx, brand.id, strategistUserId, "strategist");
+      memoryRepo.addBrandMember(ownerCtx, brand.id, writerUserId, "writer");
+      memoryRepo.addBrandMember(ownerCtx, brand.id, reviewerUserId, "reviewer");
+      memoryRepo.addBrandMember(ownerCtx, brand.id, viewerUserId, "viewer");
+
+      // Verify getOrgRole & getOrgRoleAsync
+      expect(await memoryRepo.getOrgRoleAsync(org.id, ownerUserId)).toBe("owner");
+      expect(await memoryRepo.getOrgRoleAsync(org.id, adminUserId)).toBe("admin");
+      expect(await memoryRepo.getOrgRoleAsync(org.id, writerUserId)).toBe("member");
+      expect(await memoryRepo.getOrgRoleAsync(org.id, completelyUnassignedUserId)).toBeNull();
+
+      // Verify getBrandRole & getBrandRoleAsync
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, ownerUserId)).toBe("strategist");
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, adminUserId)).toBe("strategist");
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, strategistUserId)).toBe("strategist");
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, writerUserId)).toBe("writer");
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, reviewerUserId)).toBe("reviewer");
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, viewerUserId)).toBe("viewer");
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, orgMemberOnlyUserId)).toBeNull();
+      expect(await memoryRepo.getBrandRoleAsync(brand.id, completelyUnassignedUserId)).toBeNull();
+
+      // Verify canAccessBrand & canAccessBrandAsync
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, ownerUserId)).toBe(true);
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, adminUserId)).toBe(true);
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, strategistUserId)).toBe(true);
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, writerUserId)).toBe(true);
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, reviewerUserId)).toBe(true);
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, viewerUserId)).toBe(true);
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, orgMemberOnlyUserId)).toBe(false);
+      expect(await memoryRepo.canAccessBrandAsync(brand.id, completelyUnassignedUserId)).toBe(false);
+    });
   });
 });

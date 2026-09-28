@@ -45,8 +45,9 @@ export class BrandBrainRepository {
 
   constructor() {
     const env = getServerEnv();
-    if (env.NODE_ENV === "test") {
+    if (process.env.VITEST || env.NODE_ENV === "test" || (env.NODE_ENV !== "production" && env.DEMO_MODE)) {
       this.seedFromDemoFixtures("brand-001");
+      this.seedFromDemoFixtures("33333333-3333-4000-8000-333333333331");
     }
   }
 

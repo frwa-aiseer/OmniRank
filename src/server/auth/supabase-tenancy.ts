@@ -95,10 +95,10 @@ export class SupabaseTenancyRepository {
   ): Promise<{ org: Organization; member: OrganizationMember }> {
     const client = this.getClient(accessToken, isServiceRole);
 
-    // Call atomic RPC create_organization_with_owner
+    // Call atomic RPC create_organization_with_owner with canonical SQL contract (_name, _slug)
     const { data, error } = await client.rpc("create_organization_with_owner", {
-      org_name: name,
-      org_slug: slug,
+      _name: name,
+      _slug: slug,
     });
 
     if (error) {
@@ -106,24 +106,36 @@ export class SupabaseTenancyRepository {
     }
 
     const rpcResult = Array.isArray(data) ? data[0] : data;
-    const orgId = rpcResult.organization_id;
-    const memberId = rpcResult.member_id;
+    if (!rpcResult) {
+      throw new Error("[Supabase Tenancy] create_organization_with_owner returned empty result");
+    }
+
+    // Unpack canonical nested organization & member payloads
+    const rawOrg = rpcResult.organization || rpcResult;
+    const rawMember = rpcResult.member || rpcResult;
+
+    const orgId = rawOrg.id || rawOrg.organization_id;
+    const memberId = rawMember.id || rawMember.member_id;
+
+    if (!orgId) {
+      throw new Error("[Supabase Tenancy] create_organization_with_owner response missing organization ID");
+    }
 
     const org: Organization = {
       id: orgId,
-      name,
-      slug,
-      createdBy: userId,
-      createdAt: rpcResult.created_at || new Date().toISOString(),
-      updatedAt: rpcResult.created_at || new Date().toISOString(),
+      name: rawOrg.name || name,
+      slug: rawOrg.slug || slug,
+      createdBy: rawOrg.created_by || userId,
+      createdAt: rawOrg.created_at || new Date().toISOString(),
+      updatedAt: rawOrg.updated_at || rawOrg.created_at || new Date().toISOString(),
     };
 
     const member: OrganizationMember = {
-      id: memberId,
-      organizationId: orgId,
-      userId,
-      role: "owner",
-      createdAt: rpcResult.created_at || new Date().toISOString(),
+      id: memberId || crypto.randomUUID(),
+      organizationId: rawMember.organization_id || orgId,
+      userId: rawMember.user_id || userId,
+      role: (rawMember.role as OrgRole) || "owner",
+      createdAt: rawMember.created_at || new Date().toISOString(),
     };
 
     return { org, member };
@@ -510,7 +522,7 @@ export class SupabaseTenancyRepository {
     return true;
   }
 
-  // 7. Dynamic Tenancy Resolution
+  // 7. Dynamic Tenancy Resolution & Live Role Authorization
   async resolveBrandOrganization(brandId: string, accessToken?: string, isServiceRole?: boolean): Promise<string | null> {
     const client = this.getClient(accessToken, isServiceRole);
     const { data, error } = await client
@@ -521,6 +533,98 @@ export class SupabaseTenancyRepository {
 
     if (error) throw new Error(`[Supabase Tenancy] resolveBrandOrganization failed: ${error.message}`);
     return data ? data.organization_id : null;
+  }
+
+  async getOrgRole(
+    userId: string,
+    organizationId: string,
+    accessToken?: string,
+    isServiceRole?: boolean
+  ): Promise<OrgRole | null> {
+    if (!userId || !organizationId) return null;
+    const client = this.getClient(accessToken, isServiceRole);
+    const { data, error } = await client
+      .from("organization_members")
+      .select("role")
+      .eq("organization_id", organizationId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) throw new Error(`[Supabase Tenancy] getOrgRole failed: ${error.message}`);
+    return data ? (data.role as OrgRole) : null;
+  }
+
+  async getBrandRole(
+    userId: string,
+    brandId: string,
+    accessToken?: string,
+    isServiceRole?: boolean
+  ): Promise<BrandRole | null> {
+    if (!userId || !brandId) return null;
+    const client = this.getClient(accessToken, isServiceRole);
+
+    // 1. Check explicit brand membership
+    const { data: bm, error: bmError } = await client
+      .from("brand_members")
+      .select("role")
+      .eq("brand_id", brandId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (bmError) throw new Error(`[Supabase Tenancy] getBrandRole failed: ${bmError.message}`);
+    if (bm?.role) {
+      return bm.role as BrandRole;
+    }
+
+    // 2. Org Owner/Admin inherit brand operational authority with "strategist" role
+    const orgId = await this.resolveBrandOrganization(brandId, accessToken, isServiceRole);
+    if (orgId) {
+      const orgRole = await this.getOrgRole(userId, orgId, accessToken, isServiceRole);
+      if (orgRole === "owner" || orgRole === "admin") {
+        return "strategist";
+      }
+    }
+
+    return null;
+  }
+
+  async canAccessBrand(
+    userId: string,
+    brandId: string,
+    accessToken?: string,
+    isServiceRole?: boolean
+  ): Promise<boolean> {
+    if (isServiceRole) return true;
+    if (!userId || !brandId) return false;
+
+    const client = this.getClient(accessToken, isServiceRole);
+
+    // 1. Direct brand membership check
+    const { data: bm, error: bmError } = await client
+      .from("brand_members")
+      .select("id")
+      .eq("brand_id", brandId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (bmError) throw new Error(`[Supabase Tenancy] canAccessBrand failed: ${bmError.message}`);
+    if (bm) return true;
+
+    // 2. Check Org Owner / Admin authority inheritance across organization brands
+    const orgId = await this.resolveBrandOrganization(brandId, accessToken, isServiceRole);
+    if (!orgId) return false;
+
+    const orgRole = await this.getOrgRole(userId, orgId, accessToken, isServiceRole);
+    return orgRole === "owner" || orgRole === "admin";
+  }
+
+  async isBrandAccessible(
+    userId: string,
+    brandId: string,
+    accessToken?: string,
+    isServiceRole?: boolean
+  ): Promise<boolean> {
+    return this.canAccessBrand(userId, brandId, accessToken, isServiceRole);
   }
 }
 
