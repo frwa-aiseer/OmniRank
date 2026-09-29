@@ -5,6 +5,7 @@ import { getServerEnv } from "./src/server/env.ts";
 import { tenancyRouter } from "./src/server/routes/tenancy.ts";
 import brandBrainRouter from "./src/server/routes/brand-brain.ts";
 import articleRouter from "./src/server/routes/article.ts";
+import opportunitiesRouter from "./src/server/routes/opportunities.ts";
 
 async function startServer() {
   const app = express();
@@ -21,6 +22,9 @@ async function startServer() {
 
   // Article API (OR-P05)
   app.use("/api/articles", articleRouter);
+
+  // Opportunity Engine API (OR-P06)
+  app.use("/api/opportunities", opportunitiesRouter);
 
   // Health and Diagnostic API route
   app.get("/api/health", (req, res) => {

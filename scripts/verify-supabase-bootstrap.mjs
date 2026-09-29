@@ -18,6 +18,7 @@ const expectedMigrations = [
   "20260929000009_postdeployment_sync.sql",
   "20260929000010_articles_schema.sql",
   "20260929000011_article_integrity.sql",
+  "20260929000012_opportunities_schema.sql",
 ];
 
 const requiredTables = [
@@ -46,6 +47,7 @@ const requiredTables = [
   "article_working_documents",
   "article_versions",
   "content_block_operations",
+  "opportunities"
 ];
 
 export function verifyMigrations() {

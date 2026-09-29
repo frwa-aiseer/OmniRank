@@ -479,7 +479,7 @@ describe("OR-P05-FIX — Migration 00011 Integrity", () => {
 
   it("should now have 12 migration files total", () => {
     const files = fs.readdirSync(MIG_DIR).filter((f) => f.endsWith(".sql")).sort();
-    expect(files.length).toBe(12);
+    expect(files.length).toBe(13);
     expect(files[11]).toBe("20260929000011_article_integrity.sql");
   });
 });
