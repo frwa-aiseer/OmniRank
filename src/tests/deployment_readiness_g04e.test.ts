@@ -555,12 +555,12 @@ describe("OR-G04E — Final Supabase Deployment Readiness Gate", () => {
   });
 
   describe("12 & 13. Canonical Forward Migration & Bootstrap Verification", () => {
-    it("should verify complete migration chain 00001 through 00007 creates all tables, RLS, and security controls", async () => {
+    it("should verify complete migration chain 00001 through 00008 creates all tables, RLS, and security controls", async () => {
       const { verifyMigrations } = await import("../../scripts/verify-supabase-bootstrap.mjs");
       const result = verifyMigrations();
 
       expect(result.success).toBe(true);
-      expect(result.migrationCount).toBe(7);
+      expect(result.migrationCount).toBe(8);
       expect(result.tableCount).toBe(21);
     });
   });

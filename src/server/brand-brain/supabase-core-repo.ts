@@ -15,14 +15,20 @@ import {
   EvidenceSource,
   EvidenceClaim,
 } from "../../types/index.ts";
-import { createScopedUserSupabaseClient, getAdminSupabaseClient } from "../supabase/client.ts";
+import { createScopedUserSupabaseClient, getAdminSupabaseClient, isLiveSupabaseConfigured } from "../supabase/client.ts";
 
 export class SupabaseBrandBrainCoreRepository {
   private getClient(accessToken?: string): SupabaseClient {
     if (accessToken) {
       return createScopedUserSupabaseClient(accessToken);
     }
-    return getAdminSupabaseClient();
+    // Fail closed: Never silently elevate normal operations to service-role if user token is omitted
+    if (isLiveSupabaseConfigured()) {
+      throw new Error(
+        "[Supabase Core Repo] Missing user access token for live Brand Brain operation. Access denied."
+      );
+    }
+    return createScopedUserSupabaseClient("");
   }
 
   // 1. Completeness Calculator

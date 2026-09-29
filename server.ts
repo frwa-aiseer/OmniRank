@@ -8,7 +8,7 @@ import brandBrainRouter from "./src/server/routes/brand-brain.ts";
 async function startServer() {
   const app = express();
   const env = getServerEnv();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || env.PORT || 3000;
 
   app.use(express.json());
 

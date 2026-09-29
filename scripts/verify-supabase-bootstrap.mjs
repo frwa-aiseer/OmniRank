@@ -13,6 +13,7 @@ const expectedMigrations = [
   "20260918000005_hardened_ingestion_tenancy.sql",
   "20260918000006_canonical_hardened_rls.sql",
   "20260929000007_live_foundation_closure.sql",
+  "20260929000008_predeployment_integrity.sql",
 ];
 
 const requiredTables = [
@@ -40,7 +41,7 @@ const requiredTables = [
 ];
 
 export function verifyMigrations() {
-  console.log("=== OmniRank Supabase Migration Bootstrap Verification ===");
+  console.log("=== OmniRank Supabase Migration Static Validation ===");
   const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith(".sql")).sort();
 
   console.log(`Found ${files.length} migration files in supabase/migrations/`);
@@ -121,13 +122,44 @@ export function verifyMigrations() {
   }
   console.log("  ✓ public.rls_auto_enable execute permissions revoked from PUBLIC, anon, authenticated");
 
-  // evidence role authorization
-  if (!/authz\.verify_evidence_claim/i.test(fullSql)) {
-    throw new Error("Missing authz.verify_evidence_claim RPC");
+  // evidence role authorization & verification RPC
+  if (!/authz\.verify_evidence_claim/i.test(fullSql) || !/public\.verify_evidence_claim/i.test(fullSql)) {
+    throw new Error("Missing verify_evidence_claim RPC");
   }
-  console.log("  ✓ Granular evidence role authorization & verification RPC (authz.verify_evidence_claim)");
+  console.log("  ✓ Granular evidence role authorization & verification RPC (public.verify_evidence_claim)");
 
-  console.log("\n=== ALL MIGRATION CHECKS PASSED SUCCESSFULLY ===");
+  // migration 00008 pre-deployment integrity checks:
+  // auth.users profile backfill
+  if (!/FROM\s+auth\.users/i.test(fullSql)) {
+    throw new Error("Missing auth.users profile backfill");
+  }
+  console.log("  ✓ auth.users profile backfill");
+
+  // Direct org insert policy removed
+  if (!/DROP\s+POLICY\s+IF\s+EXISTS\s+"organizations_insert_canonical"\s+ON\s+public\.organizations/i.test(fullSql)) {
+    throw new Error("Missing drop of direct organization insert policy");
+  }
+  console.log("  ✓ Direct organization INSERT policy removed (forced atomic creation via RPC)");
+
+  // Generic audit fabrication revoked
+  if (!/REVOKE\s+ALL\s+ON\s+FUNCTION\s+authz\.record_audit_event/i.test(fullSql)) {
+    throw new Error("Missing audit fabrication RPC revocation");
+  }
+  console.log("  ✓ Generic audit event RPC revoked from authenticated/public");
+
+  // Blanket authz grants removed
+  if (!/REVOKE\s+EXECUTE\s+ON\s+ALL\s+FUNCTIONS\s+IN\s+SCHEMA\s+authz\s+FROM\s+PUBLIC,\s+anon,\s+authenticated/i.test(fullSql)) {
+    throw new Error("Missing blanket authz execute revocation");
+  }
+  console.log("  ✓ Blanket authz schema grants revoked (explicit discrete function grants only)");
+
+  // Legacy validator cleanup
+  if (!/DROP\s+FUNCTION\s+IF\s+EXISTS\s+public\.validate_tenant_brand_consistency/i.test(fullSql)) {
+    throw new Error("Missing cleanup of legacy validate_tenant_brand_consistency");
+  }
+  console.log("  ✓ Obsolete tenancy validator function & triggers dropped");
+
+  console.log("\n=== STATIC MIGRATION VALIDATION PASSED ===");
   return { success: true, migrationCount: expectedMigrations.length, tableCount: requiredTables.length };
 }
 
@@ -137,7 +169,7 @@ export function generateUnifiedBootstrap() {
   let header = `-- ============================================================================\n`;
   header += `-- OmniRank Unified Supabase Database Bootstrap Bundle\n`;
   header += `-- Generated: ${new Date().toISOString()}\n`;
-  header += `-- Contains sequential application of migrations 00001 through 00007\n`;
+  header += `-- Contains sequential application of migrations 00001 through 00008\n`;
   header += `-- Safe to run in Supabase SQL Editor on a clean project\n`;
   header += `-- ============================================================================\n\n`;
 

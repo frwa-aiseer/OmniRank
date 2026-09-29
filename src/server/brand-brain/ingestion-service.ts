@@ -285,7 +285,7 @@ export class BrandBrainIngestionService {
     // 6. Source Registration / Lookup
     let source = await activeRepo.findMatchingSource(brandId, input.sourceName, input.sourceType);
     if (!source) {
-      const sourceId = `src-${randomUUID().slice(0, 8)}`;
+      const sourceId = randomUUID();
       source = {
         id: sourceId,
         brandId,
@@ -327,7 +327,7 @@ export class BrandBrainIngestionService {
       input.classification || this.autoClassifyDocument(parsed.title, sanitization.cleanText);
 
     // 10. Knowledge Document Registration
-    const documentId = `doc-${randomUUID().slice(0, 8)}`;
+    const documentId = randomUUID();
     const newDoc: KnowledgeDocument = {
       id: documentId,
       brandId,
@@ -380,7 +380,7 @@ export class BrandBrainIngestionService {
     const generatedChunks: KnowledgeChunk[] = [];
     for (let i = 0; i < rawChunks.length; i++) {
       const rc = rawChunks[i];
-      const chunkId = `chk-${randomUUID().slice(0, 8)}`;
+      const chunkId = randomUUID();
 
       const cachedEmbedding = prevChunkMap.get(rc.contentHash);
       const chunk: KnowledgeChunk = {
@@ -426,7 +426,7 @@ export class BrandBrainIngestionService {
     // Requirement 7: EVERY automatically extracted claim starts as "unverified".
     // 1P source may increase confidence/trust score, but does NOT make it verified.
     const generatedClaims: EvidenceClaim[] = [];
-    const evidenceSourceId = `evs-${randomUUID().slice(0, 8)}`;
+    const evidenceSourceId = randomUUID();
     const evSource: EvidenceSource = {
       id: evidenceSourceId,
       brandId,
@@ -452,7 +452,7 @@ export class BrandBrainIngestionService {
       );
 
       for (const cand of candidates) {
-        const claimId = `clm-${randomUUID().slice(0, 8)}`;
+        const claimId = randomUUID();
         const claim: EvidenceClaim = {
           id: claimId,
           brandId,
@@ -465,7 +465,7 @@ export class BrandBrainIngestionService {
           extractedEntities: cand.extractedEntities,
           sources: [
             {
-              id: `cls-${randomUUID().slice(0, 8)}`,
+              id: randomUUID(),
               claimId,
               sourceId: evidenceSourceId,
               sourceName: source.name,

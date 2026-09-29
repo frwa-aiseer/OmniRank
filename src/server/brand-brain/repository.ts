@@ -617,23 +617,31 @@ export class SupabaseBrandBrainRepository implements IBrandBrainRepository {
     claimId: string,
     brandId: string,
     status: EvidenceVerificationStatus,
-    verifiedBy?: string
+    _verifiedBy?: string
   ): Promise<EvidenceClaim> {
-    const verifiedAt = status === "verified" ? new Date().toISOString() : undefined;
-    const { data, error } = await this.client
+    // Database-authoritative verification RPC (Requirement 4):
+    // Reviewer identity is derived from auth.uid() and timestamp from NOW()
+    const { data: rpcData, error: rpcErr } = await this.client.rpc("verify_evidence_claim", {
+      _claim_id: claimId,
+      _new_status: status,
+    });
+
+    if (rpcErr) {
+      throw new Error(`[Supabase Repository] updateClaimVerification RPC failed: ${rpcErr.message}`);
+    }
+
+    // Retrieve full updated claim record with joined sources
+    const { data: claimRow, error: fetchErr } = await this.client
       .from("evidence_claims")
-      .update({
-        verification_status: status,
-        verified_by: verifiedBy,
-        verified_at: verifiedAt,
-        updated_at: new Date().toISOString()
-      })
+      .select("*, evidence_claim_sources(*)")
       .eq("id", claimId)
       .eq("brand_id", brandId)
-      .select("*, evidence_claim_sources(*)")
-      .single();
+      .maybeSingle();
 
-    if (error) throw new Error(`[Supabase Repository] updateClaimVerification failed: ${error.message}`);
+    const data = claimRow || rpcData;
+    if (!data) {
+      throw new Error(`[Supabase Repository] updateClaimVerification failed: Claim not found`);
+    }
 
     return {
       id: data.id,
