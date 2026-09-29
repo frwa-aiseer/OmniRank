@@ -12,6 +12,7 @@ const expectedMigrations = [
   "20260917000004_hardened_auth_tenancy_rls.sql",
   "20260918000005_hardened_ingestion_tenancy.sql",
   "20260918000006_canonical_hardened_rls.sql",
+  "20260919000001_role_helper_bootstrap.sql",
   "20260929000007_live_foundation_closure.sql",
   "20260929000008_predeployment_integrity.sql",
   "20260929000009_postdeployment_sync.sql",
