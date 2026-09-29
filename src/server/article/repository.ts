@@ -34,7 +34,7 @@ export interface IArticleRepository {
   getArticle(articleId: string, brandId: string): Promise<Article | null>;
   listArticles(brandId: string): Promise<Article[]>;
   updateArticleStatus(articleId: string, brandId: string, status: Article["status"]): Promise<Article>;
-  reviewArticle(articleId: string, versionId: string | null, status: Article["status"]): Promise<void>;
+  reviewArticle(articleId: string, versionId: string | null, decision: "approved" | "rejected"): Promise<void>;
 
   // Working document (autosave)
   autosaveWorkingDocument(
@@ -178,12 +178,19 @@ export class InMemoryArticleRepository implements IArticleRepository {
     return a;
   }
 
-  async reviewArticle(articleId: string, versionId: string | null, status: Article["status"]): Promise<void> {
+  async reviewArticle(articleId: string, versionId: string | null, decision: "approved" | "rejected"): Promise<void> {
     const a = mem.articles.get(articleId);
     if (!a) throw new Error("Article not found");
-    // Simplified mock behavior for testing
-    a.status = status;
-    a.approvedVersionId = status === "approved" ? (versionId ?? undefined) : undefined;
+    if (decision === "approved") {
+      if (!versionId) throw new Error("p_version_id is required for approval");
+      a.status = "approved";
+      a.approvedVersionId = versionId;
+    } else if (decision === "rejected") {
+      a.status = "drafting";
+      a.approvedVersionId = undefined;
+    } else {
+      throw new Error("Invalid review decision");
+    }
     a.updatedAt = new Date().toISOString();
   }
 
@@ -418,11 +425,11 @@ export class SupabaseArticleRepository implements IArticleRepository {
     return mapArticleRow(data);
   }
 
-  async reviewArticle(articleId: string, versionId: string | null, status: Article["status"]): Promise<void> {
+  async reviewArticle(articleId: string, versionId: string | null, decision: "approved" | "rejected"): Promise<void> {
     const { error } = await this.client.rpc("review_article", {
       p_article_id: articleId,
       p_version_id: versionId,
-      p_status: status,
+      p_decision: decision,
     });
     if (error) throw new Error(`[Article Repo] reviewArticle: ${error.message}`);
   }

@@ -290,4 +290,27 @@ router.get("/:brandId/:articleId/block-operations", async (req: Request, res: Re
   }
 });
 
+// ============================================================================
+// 11. Review article (Approve / Reject)
+// ============================================================================
+router.post("/:brandId/:articleId/review", async (req: Request, res: Response) => {
+  const { brandId, articleId } = req.params;
+  const auth = await resolveAuth(req, brandId);
+  if (auth.error) return void res.status(auth.status).json({ error: auth.error });
+
+  const { decision, versionId } = req.body as { decision: "approved" | "rejected"; versionId?: string };
+  if (!decision || (decision !== "approved" && decision !== "rejected")) {
+    return void res.status(400).json({ error: "decision must be 'approved' or 'rejected'" });
+  }
+
+  try {
+    await getRepo(req).reviewArticle(articleId, versionId ?? null, decision);
+    res.json({ success: true, decision });
+  } catch (err: unknown) {
+    const msg = (err as Error).message;
+    const status = msg.includes("Unauthorized") || msg.includes("does not belong") ? 403 : 500;
+    res.status(status).json({ error: msg });
+  }
+});
+
 export default router;

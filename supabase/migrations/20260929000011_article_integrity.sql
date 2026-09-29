@@ -309,7 +309,7 @@ REVOKE ALL ON FUNCTION public.fn_assign_version_number() FROM PUBLIC, anon, auth
 CREATE OR REPLACE FUNCTION public.review_article(
   p_article_id UUID,
   p_version_id UUID,
-  p_status TEXT
+  p_decision TEXT
 )
 RETURNS VOID
 LANGUAGE plpgsql
@@ -347,29 +347,39 @@ BEGIN
     RAISE EXCEPTION 'Unauthorized: only strategist, reviewer, or org admin can review articles';
   END IF;
 
-  -- 3. Verify version (if approved)
-  IF p_status = 'approved' AND p_version_id IS NOT NULL THEN
+  -- 3. Enforce decision logic
+  IF p_decision = 'approved' THEN
+    IF p_version_id IS NULL THEN
+      RAISE EXCEPTION 'p_version_id is required for approval';
+    END IF;
+    
     IF NOT EXISTS (
       SELECT 1 FROM public.article_versions
       WHERE id = p_version_id AND article_id = p_article_id
     ) THEN
       RAISE EXCEPTION 'Version does not belong to this article';
     END IF;
-  END IF;
 
-  -- 4. Enforce status values
-  IF p_status NOT IN ('idea','researching','brief','drafting','ai_review','human_review','approved','scheduled','published','monitoring','refresh_recommended','archived') THEN
-    RAISE EXCEPTION 'Invalid status';
-  END IF;
+    UPDATE public.articles
+    SET 
+      status = 'approved',
+      approved_version_id = p_version_id,
+      approved_by = auth.uid(),
+      updated_at = NOW()
+    WHERE id = p_article_id;
 
-  -- 5. Update article (only review fields)
-  UPDATE public.articles
-  SET 
-    status = p_status,
-    approved_version_id = CASE WHEN p_status = 'approved' THEN p_version_id ELSE NULL END,
-    approved_by = CASE WHEN p_status = 'approved' THEN auth.uid() ELSE NULL END,
-    updated_at = NOW()
-  WHERE id = p_article_id;
+  ELSIF p_decision = 'rejected' THEN
+    UPDATE public.articles
+    SET 
+      status = 'drafting',
+      approved_version_id = NULL,
+      approved_by = NULL,
+      updated_at = NOW()
+    WHERE id = p_article_id;
+
+  ELSE
+    RAISE EXCEPTION 'Invalid review decision. Must be approved or rejected.';
+  END IF;
 
 END;
 $$;
