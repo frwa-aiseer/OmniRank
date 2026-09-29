@@ -12,6 +12,7 @@ import { getArticleRepository } from "../article/repository.ts";
 import {
   validateArticleEnvelope,
   validateBlockReplacement,
+  EnvelopeIdentityCheck,
 } from "../article/schema-validator.ts";
 import { Article, ArticleEnvelope, ArticleBlock } from "../../types/article.ts";
 
@@ -121,8 +122,9 @@ router.put("/:brandId/:articleId/autosave", async (req: Request, res: Response) 
   const { content, organizationId } = req.body as { content: ArticleEnvelope; organizationId: string };
   if (!content) return void res.status(400).json({ error: "content is required" });
 
-  // Validate envelope before autosave
-  const validation = validateArticleEnvelope(content);
+  // Validate envelope + enforce identity: content.articleId must match route, content.brandId must match route
+  const identity: EnvelopeIdentityCheck = { expectedArticleId: articleId, expectedBrandId: brandId };
+  const validation = validateArticleEnvelope(content, identity);
   if (!validation.valid) {
     return void res.status(422).json({ error: "Schema validation failed", errors: validation.errors });
   }
@@ -168,7 +170,8 @@ router.post("/:brandId/:articleId/versions", async (req: Request, res: Response)
     organizationId: string;
   };
 
-  const validation = validateArticleEnvelope(content);
+  const identity: EnvelopeIdentityCheck = { expectedArticleId: articleId, expectedBrandId: brandId };
+  const validation = validateArticleEnvelope(content, identity);
   if (!validation.valid) {
     return void res.status(422).json({ error: "Schema validation failed", errors: validation.errors });
   }
@@ -242,7 +245,8 @@ router.put("/:brandId/:articleId/blocks/:blockId", async (req: Request, res: Res
   if (!workingDoc) return void res.status(404).json({ error: "Working document not found" });
 
   const existingIds = new Set(workingDoc.content.document.blocks.map((b) => b.id));
-  const blockErrors = validateBlockReplacement(block, existingIds);
+  // Pass blockId as targetBlockId — validates newBlock.id must equal route blockId
+  const blockErrors = validateBlockReplacement(block, existingIds, blockId);
   if (blockErrors.length > 0) {
     return void res.status(422).json({ error: "Block validation failed", errors: blockErrors });
   }

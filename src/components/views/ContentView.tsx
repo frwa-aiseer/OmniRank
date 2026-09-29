@@ -1,65 +1,219 @@
-import { useState } from "react";
-import { FileText, Plus, CheckCircle, Clock, Eye, Trash2, ShieldCheck, X, Sparkles, AlertCircle } from "lucide-react";
+/**
+ * OR-P05-FIX — Content View (Article List + Editor Integration)
+ *
+ * Live mode: uses /api/articles backend (Supabase-scoped RLS).
+ * Demo mode: uses in-memory article repository.
+ *
+ * When an article is opened, renders ArticleEditorView in-place.
+ * ArticleDocument state (from AppContext) is left for demo/legacy list display;
+ * actual article content is managed by the article API / InMemoryArticleRepository.
+ */
+
+import { useState, useCallback } from "react";
+import {
+  FileText, Plus, CheckCircle, Clock, Eye, Trash2, X, AlertCircle, ArrowLeft
+} from "lucide-react";
 import { useApp } from "../../context/AppContext.tsx";
-import { ArticleDocument, ArticleStatus } from "../../types/index.ts";
+import { ArticleEditorView } from "./ArticleEditorView.tsx";
+import { getArticleRepository } from "../../server/article/repository.ts";
+import { ArticleEnvelope, ArticleVersion, ARTICLE_SCHEMA_VERSION, Article, ArticleStatus } from "../../types/article.ts";
 
+// ============================================================================
+// Helper — derive repo access token from AppContext
+// ============================================================================
+function useArticleRepo() {
+  const { currentUser } = useApp();
+  // In live mode the access token would come from Supabase session.
+  // Here we pass undefined so demo InMemoryRepo is used (isLiveSupabaseConfigured() = false in dev).
+  return getArticleRepository(undefined);
+}
+
+// ============================================================================
+// ContentView
+// ============================================================================
 export function ContentView() {
-  const { currentBrand, currentUser, articles, createArticle, updateArticle, deleteArticle } = useApp();
+  const { currentBrand, currentUser } = useApp();
+  const repo = useArticleRepo();
 
+  // ---- List state ----
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [loadingList, setLoadingList] = useState(false);
+  const [listLoaded, setListLoaded] = useState(false);
+
+  // ---- Create state ----
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [selectedArticle, setSelectedArticle] = useState<ArticleDocument | null>(null);
-
-  // New article form state
   const [newTitle, setNewTitle] = useState("");
-  const [newKeyword, setNewKeyword] = useState("");
-  const [newSummary, setNewSummary] = useState("");
+  const [newSlug, setNewSlug] = useState("");
   const [formError, setFormError] = useState("");
 
-  const handleCreateArticle = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTitle.trim()) {
-      setFormError("Please enter an article title.");
-      return;
+  // ---- Editor state ----
+  const [editingArticle, setEditingArticle] = useState<Article | null>(null);
+  const [editingWorkingDoc, setEditingWorkingDoc] = useState<ArticleEnvelope | undefined>(undefined);
+  const [editingVersions, setEditingVersions] = useState<ArticleVersion[]>([]);
+  const [editorLoading, setEditorLoading] = useState(false);
+
+  const brandId = currentBrand?.id ?? "";
+  // Derive orgId from current brand; fallback to a stable demo UUID
+  const orgId = (currentBrand as unknown as Record<string, string>)?.organizationId
+    ?? "11111111-1111-4000-8000-111111111111";
+  const userId = (currentUser as unknown as Record<string, string>)?.id
+    ?? "00000000-0000-4000-8000-000000000001";
+
+  // Load articles when brand changes
+  const loadArticles = useCallback(async () => {
+    if (!brandId) return;
+    setLoadingList(true);
+    try {
+      const list = await repo.listArticles(brandId);
+      setArticles(list);
+      setListLoaded(true);
+    } finally {
+      setLoadingList(false);
     }
+  }, [brandId, repo]);
+
+  // Trigger load on first render if brand is available
+  if (brandId && !listLoaded && !loadingList) {
+    loadArticles();
+  }
+
+  // ---- Create article ----
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTitle.trim()) { setFormError("Title is required."); return; }
+    if (!brandId || !orgId) { setFormError("No brand/org selected."); return; }
 
     try {
-      await createArticle({
+      const article = await repo.createArticle({
+        organizationId: orgId,
+        brandId,
+        schemaVersion: ARTICLE_SCHEMA_VERSION,
+        status: "drafting" as ArticleStatus,
         title: newTitle.trim(),
-        targetKeyword: newKeyword.trim() || "Technical Keyword",
-        summary: newSummary.trim() || "Structured block outline with verified evidence claims.",
-        status: "drafting",
-        version: "v1.0",
-        canonicalBlocksCount: 8,
-        evidenceClaimsCount: 2,
-        authorName: currentUser.fullName || "Author",
+        slug: newSlug.trim() || newTitle.trim().toLowerCase().replace(/\s+/g, "-"),
+        locale: "en",
+        seo: {},
+        geo: {},
+        metadata: {},
+        sources: [],
+        relationships: [],
+        createdBy: userId,
       });
-
-      setNewTitle("");
-      setNewKeyword("");
-      setNewSummary("");
-      setFormError("");
+      setArticles((prev) => [article, ...prev]);
+      setNewTitle(""); setNewSlug(""); setFormError("");
       setIsCreateModalOpen(false);
-    } catch (err: any) {
-      setFormError(err.message || "Failed to create article");
+      // Open editor immediately
+      openEditor(article);
+    } catch (err: unknown) {
+      setFormError((err as Error).message || "Failed to create article");
     }
   };
 
-  const handleStatusChange = async (articleId: string, newStatus: ArticleStatus) => {
-    await updateArticle(articleId, { status: newStatus });
-    if (selectedArticle?.id === articleId) {
-      setSelectedArticle({ ...selectedArticle, status: newStatus });
+  // ---- Open editor ----
+  const openEditor = useCallback(async (article: Article) => {
+    setEditorLoading(true);
+    setEditingArticle(article);
+    try {
+      const workingDoc = await repo.getWorkingDocument(article.id, article.brandId);
+      setEditingWorkingDoc(workingDoc?.content);
+      const versionList = await repo.listVersions(article.id, article.brandId);
+      setEditingVersions(versionList);
+    } finally {
+      setEditorLoading(false);
     }
-  };
+  }, [repo]);
 
+  // ---- Autosave ----
+  const handleAutosave = useCallback(async (content: ArticleEnvelope) => {
+    if (!editingArticle) return;
+    await repo.autosaveWorkingDocument(
+      editingArticle.id, editingArticle.brandId, editingArticle.organizationId,
+      content, userId
+    );
+  }, [editingArticle, repo, userId]);
+
+  // ---- Save version ----
+  const handleSaveVersion = useCallback(async (content: ArticleEnvelope, label: string): Promise<ArticleVersion> => {
+    if (!editingArticle) throw new Error("No article open");
+    const version = await repo.createVersion(
+      editingArticle.id, editingArticle.brandId, editingArticle.organizationId,
+      content, label, userId
+    );
+    setEditingVersions((prev) => [version, ...prev]);
+    return version;
+  }, [editingArticle, repo, userId]);
+
+  // ---- Restore version ----
+  const handleRestoreVersion = useCallback(async (versionId: string) => {
+    if (!editingArticle) return;
+    const restored = await repo.restoreVersion(
+      editingArticle.id, editingArticle.brandId, editingArticle.organizationId,
+      versionId, userId
+    );
+    setEditingWorkingDoc(restored.content);
+  }, [editingArticle, repo, userId]);
+
+  // ---- Delete ----
   const handleDelete = async (articleId: string) => {
-    if (confirm("Are you sure you want to delete this article document?")) {
-      await deleteArticle(articleId);
-      if (selectedArticle?.id === articleId) {
-        setSelectedArticle(null);
-      }
-    }
+    if (!confirm("Delete this article?")) return;
+    setArticles((prev) => prev.filter((a) => a.id !== articleId));
+    if (editingArticle?.id === articleId) setEditingArticle(null);
   };
 
+  // ============================================================
+  // EDITOR MODE
+  // ============================================================
+  if (editingArticle) {
+    return (
+      <div className="h-full flex flex-col">
+        {/* Editor header */}
+        <div className="flex items-center gap-3 px-4 py-2 border-b border-neutral-200 bg-white shrink-0">
+          <button
+            onClick={() => { setEditingArticle(null); loadArticles(); }}
+            className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-900 cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back to articles
+          </button>
+          <span className="text-neutral-300">|</span>
+          <span className="text-xs text-neutral-500 truncate">{editingArticle.title}</span>
+          <span className={`ml-auto text-[10px] font-medium px-2 py-0.5 rounded border ${
+            editingArticle.status === "drafting"
+              ? "bg-amber-50 text-amber-700 border-amber-200"
+              : editingArticle.status === "approved"
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : "bg-blue-50 text-blue-700 border-blue-200"
+          }`}>
+            {editingArticle.status.toUpperCase()}
+          </span>
+        </div>
+
+        {editorLoading ? (
+          <div className="flex-1 flex items-center justify-center text-neutral-400 text-sm">
+            Loading editor…
+          </div>
+        ) : (
+          <div className="flex-1 overflow-hidden">
+            <ArticleEditorView
+              articleId={editingArticle.id}
+              brandId={editingArticle.brandId}
+              organizationId={editingArticle.organizationId}
+              userId={userId}
+              initialContent={editingWorkingDoc}
+              initialVersions={editingVersions}
+              onAutosave={handleAutosave}
+              onSaveVersion={handleSaveVersion}
+              onRestoreVersion={handleRestoreVersion}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ============================================================
+  // LIST MODE
+  // ============================================================
   return (
     <div id="content-view" className="p-8 max-w-6xl mx-auto space-y-6">
       {/* Header */}
@@ -75,97 +229,81 @@ export function ContentView() {
           </p>
         </div>
         <button
-          onClick={() => {
-            setFormError("");
-            setIsCreateModalOpen(true);
-          }}
+          onClick={() => { setFormError(""); setIsCreateModalOpen(true); }}
           className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-neutral-900 text-white text-xs font-medium hover:bg-neutral-800 transition-colors cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>New Article Document</span>
+          <span>New Article</span>
         </button>
       </div>
 
-      {/* Article List or Empty State */}
-      {articles.length === 0 ? (
+      {/* Article list */}
+      {loadingList ? (
+        <div className="text-center py-12 text-neutral-400 text-sm">Loading articles…</div>
+      ) : articles.length === 0 ? (
         <div className="p-12 rounded-2xl bg-white border border-neutral-200 text-center space-y-4 shadow-xs">
           <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
             <FileText className="w-6 h-6" />
           </div>
           <div className="max-w-md mx-auto space-y-1">
-            <h2 className="text-base font-semibold text-neutral-900">No articles created yet</h2>
+            <h2 className="text-base font-semibold text-neutral-900">No articles yet</h2>
             <p className="text-xs text-neutral-500">
-              Start by creating your first article document for <span className="font-medium text-neutral-700">{currentBrand?.name || "your brand"}</span>. You can define block outlines, cite evidence, and submit for review.
+              Create your first structured article for{" "}
+              <span className="font-medium text-neutral-700">{currentBrand?.name || "your brand"}</span>.
             </p>
           </div>
           <button
-            onClick={() => {
-              setFormError("");
-              setIsCreateModalOpen(true);
-            }}
+            onClick={() => { setFormError(""); setIsCreateModalOpen(true); }}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 transition cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Create First Article</span>
+            Create First Article
           </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {articles.map((article) => {
-            const isDraft = article.status === "drafting";
-            const isReview = article.status === "review";
+            const isDraft = article.status === "drafting" || article.status === "brief" || article.status === "researching";
             const isApproved = article.status === "approved" || article.status === "published";
-
             return (
               <div
                 key={article.id}
                 className="p-5 rounded-xl bg-white border border-neutral-200 shadow-xs space-y-3 hover:border-neutral-300 transition-colors"
               >
                 <div className="flex items-center justify-between">
-                  <span
-                    className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${
-                      isDraft
-                        ? "bg-amber-50 text-amber-700 border-amber-200"
-                        : isReview
-                        ? "bg-blue-50 text-blue-700 border-blue-200"
-                        : "bg-emerald-50 text-emerald-700 border-emerald-200"
-                    }`}
-                  >
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${
+                    isDraft
+                      ? "bg-amber-50 text-amber-700 border-amber-200"
+                      : isApproved
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      : "bg-blue-50 text-blue-700 border-blue-200"
+                  }`}>
                     {isDraft && <Clock className="w-3 h-3" />}
-                    {isReview && <Eye className="w-3 h-3" />}
                     {isApproved && <CheckCircle className="w-3 h-3" />}
-                    <span>
-                      {isDraft
-                        ? `In Drafting (${article.version})`
-                        : isReview
-                        ? `Awaiting Review (${article.version})`
-                        : `Approved (${article.version})`}
-                    </span>
+                    {!isDraft && !isApproved && <Eye className="w-3 h-3" />}
+                    {article.status.toUpperCase()}
                   </span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-neutral-400">{article.canonicalBlocksCount} Canonical Blocks</span>
-                    <button
-                      onClick={() => handleDelete(article.id)}
-                      className="text-neutral-400 hover:text-rose-600 transition p-1"
-                      title="Delete Article"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => handleDelete(article.id)}
+                    className="text-neutral-400 hover:text-rose-600 transition p-1 cursor-pointer"
+                    title="Delete"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
 
                 <h2 className="font-semibold text-neutral-900 text-base">{article.title}</h2>
-                <p className="text-xs text-neutral-500 line-clamp-2">{article.summary}</p>
+                <p className="text-xs text-neutral-500 font-mono">{article.slug}</p>
 
                 <div className="pt-2 border-t border-neutral-100 flex items-center justify-between text-xs">
-                  <span className="text-neutral-500">
-                    By {article.authorName} • Keyword: <span className="font-medium text-neutral-700">{article.targetKeyword}</span>
+                  <span className="text-neutral-500 text-[10px]">
+                    {new Date(article.createdAt).toLocaleDateString()}
                   </span>
                   <button
-                    onClick={() => setSelectedArticle(article)}
+                    onClick={() => openEditor(article)}
                     className="text-indigo-600 font-medium hover:text-indigo-700 inline-flex items-center gap-1 cursor-pointer"
                   >
-                    <span>Inspect Version</span>
+                    <span>Open Editor</span>
                     <Eye className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -175,19 +313,16 @@ export function ContentView() {
         </div>
       )}
 
-      {/* Create Article Modal */}
+      {/* Create modal */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 bg-neutral-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl space-y-5 border border-neutral-200">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-indigo-600" />
-                <h3 className="font-bold text-neutral-900 text-base">New Structured Article Document</h3>
+                <h3 className="font-bold text-neutral-900 text-base">New Article</h3>
               </div>
-              <button
-                onClick={() => setIsCreateModalOpen(false)}
-                className="text-neutral-400 hover:text-neutral-600 cursor-pointer"
-              >
+              <button onClick={() => setIsCreateModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -199,41 +334,31 @@ export function ContentView() {
               </div>
             )}
 
-            <form onSubmit={handleCreateArticle} className="space-y-4 text-xs">
+            <form onSubmit={handleCreate} className="space-y-4 text-xs">
               <div className="space-y-1">
-                <label className="font-semibold text-neutral-700">Article Title *</label>
+                <label className="font-semibold text-neutral-700">Title *</label>
                 <input
                   type="text"
                   value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  placeholder="e.g. Architectural Blueprint for Enterprise Multi-Tenancy"
+                  onChange={(e) => {
+                    setNewTitle(e.target.value);
+                    if (!newSlug) setNewSlug(e.target.value.toLowerCase().replace(/\s+/g, "-"));
+                  }}
+                  placeholder="Article title"
                   className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   required
                 />
               </div>
-
               <div className="space-y-1">
-                <label className="font-semibold text-neutral-700">Target Keyword / Topic</label>
+                <label className="font-semibold text-neutral-700">Slug</label>
                 <input
                   type="text"
-                  value={newKeyword}
-                  onChange={(e) => setNewKeyword(e.target.value)}
-                  placeholder="e.g. enterprise multi-tenancy architecture"
-                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={newSlug}
+                  onChange={(e) => setNewSlug(e.target.value)}
+                  placeholder="url-friendly-slug"
+                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                 />
               </div>
-
-              <div className="space-y-1">
-                <label className="font-semibold text-neutral-700">Executive Summary / Brief</label>
-                <textarea
-                  value={newSummary}
-                  onChange={(e) => setNewSummary(e.target.value)}
-                  rows={3}
-                  placeholder="Define the primary thesis, key block sections, and target evidence citations..."
-                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-                />
-              </div>
-
               <div className="pt-3 border-t border-neutral-100 flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -246,104 +371,10 @@ export function ContentView() {
                   type="submit"
                   className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition cursor-pointer"
                 >
-                  Create Document
+                  Create & Open Editor
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Article Inspector / Details Modal */}
-      {selectedArticle && (
-        <div className="fixed inset-0 bg-neutral-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-xl space-y-5 border border-neutral-200 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
-                  Version {selectedArticle.version} • {selectedArticle.status.toUpperCase()}
-                </span>
-                <h3 className="font-bold text-neutral-900 text-lg">{selectedArticle.title}</h3>
-              </div>
-              <button
-                onClick={() => setSelectedArticle(null)}
-                className="text-neutral-400 hover:text-neutral-600 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-4 rounded-xl bg-neutral-50 border border-neutral-200 space-y-2 text-xs">
-              <div className="font-semibold text-neutral-700">Document Summary</div>
-              <p className="text-neutral-600 leading-relaxed">{selectedArticle.summary}</p>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 text-center text-xs">
-              <div className="p-3 rounded-lg border border-neutral-200 bg-white">
-                <div className="font-bold text-neutral-900 text-base">{selectedArticle.canonicalBlocksCount}</div>
-                <div className="text-neutral-500">Canonical Blocks</div>
-              </div>
-              <div className="p-3 rounded-lg border border-neutral-200 bg-white">
-                <div className="font-bold text-neutral-900 text-base">{selectedArticle.evidenceClaimsCount}</div>
-                <div className="text-neutral-500">Evidence Claims Cited</div>
-              </div>
-              <div className="p-3 rounded-lg border border-neutral-200 bg-white">
-                <div className="font-bold text-emerald-600 text-base">Passed (100%)</div>
-                <div className="text-neutral-500">Policy Gate Status</div>
-              </div>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-neutral-100">
-              <span className="text-xs font-semibold text-neutral-700 block">Workflow State Transitions</span>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => handleStatusChange(selectedArticle.id, "drafting")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer ${
-                    selectedArticle.status === "drafting"
-                      ? "bg-amber-500 text-white border-amber-600"
-                      : "bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50"
-                  }`}
-                >
-                  Mark as Drafting
-                </button>
-                <button
-                  onClick={() => handleStatusChange(selectedArticle.id, "review")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer ${
-                    selectedArticle.status === "review"
-                      ? "bg-blue-600 text-white border-blue-700"
-                      : "bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50"
-                  }`}
-                >
-                  Submit for Review
-                </button>
-                <button
-                  onClick={() => handleStatusChange(selectedArticle.id, "approved")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer ${
-                    selectedArticle.status === "approved"
-                      ? "bg-emerald-600 text-white border-emerald-700"
-                      : "bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50"
-                  }`}
-                >
-                  Approve & Lock Version
-                </button>
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-neutral-100 flex items-center justify-between">
-              <button
-                onClick={() => handleDelete(selectedArticle.id)}
-                className="text-xs text-rose-600 font-medium hover:text-rose-700 inline-flex items-center gap-1 cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Delete Document</span>
-              </button>
-              <button
-                onClick={() => setSelectedArticle(null)}
-                className="px-4 py-2 bg-neutral-900 text-white rounded-lg text-xs font-medium hover:bg-neutral-800 transition cursor-pointer"
-              >
-                Close Inspector
-              </button>
-            </div>
           </div>
         </div>
       )}

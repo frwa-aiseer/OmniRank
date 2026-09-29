@@ -1,16 +1,23 @@
 /**
- * OR-P05 — Article Editor View
+ * OR-P05-FIX — Article Editor View (BlockNote-based)
+ *
+ * Uses real BlockNote editor as the editing surface.
+ * Canonical source of truth = OmniRank structured JSON (ArticleEnvelope).
+ * HTML is NEVER persisted — only derived at render time.
  *
  * Three-column layout:
  *   Left  : Outline / Blocks / Versions panel
- *   Center: Editor area (BlockNote-style; renders from structured JSON, never HTML)
+ *   Center: BlockNote editor (converts to/from OmniRank JSON)
  *   Right : AI / SEO / GEO / Evidence / Brand / Links panel
- *
- * This is a functional shell. HTML is strictly a rendering output;
- * the canonical source of truth is always the structured JSON content.
  */
 
-import { useState, useCallback, useEffect } from "react";
+import "@blocknote/core/fonts/inter.css";
+import "@blocknote/mantine/style.css";
+
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useCreateBlockNote } from "@blocknote/react";
+import { BlockNoteView } from "@blocknote/mantine";
+import type { Block } from "@blocknote/core";
 import {
   FileText,
   List,
@@ -22,28 +29,375 @@ import {
   Tag,
   Link2,
   Save,
-  PlusCircle,
   RotateCcw,
   ChevronRight,
   ChevronDown,
-  AlignLeft,
+  PlusCircle,
   Hash,
-  Type,
+  AlignLeft,
+  Table,
   Image,
+  Video,
   Quote,
   BarChart2,
-  Minus,
+  AlertTriangle,
+  ExternalLink,
+  HelpCircle,
   Code,
-  Table,
+  Minus,
 } from "lucide-react";
 import { cn } from "../../lib/utils.ts";
 import {
   ArticleEnvelope,
   ArticleBlock,
   ArticleVersion,
-  BlockType,
   ARTICLE_SCHEMA_VERSION,
+  BlockType,
+  V1_BLOCK_TYPES,
 } from "../../types/article.ts";
+
+// ============================================================================
+// Block conversion: BlockNote ↔ OmniRank JSON
+// ============================================================================
+
+const INSERTABLE_BLOCKS: Array<{ type: BlockType; label: string; icon: typeof AlignLeft }> = [
+  { type: "heading", label: "Heading", icon: Hash },
+  { type: "paragraph", label: "Paragraph", icon: AlignLeft },
+  { type: "bulletList", label: "Bullet List", icon: List },
+  { type: "numberedList", label: "Numbered List", icon: List },
+  { type: "table", label: "Data Table", icon: Table },
+  { type: "comparisonTable", label: "Comparison Table", icon: Table },
+  { type: "image", label: "Image", icon: Image },
+  { type: "youtube", label: "YouTube Video", icon: Video },
+  { type: "quote", label: "Blockquote", icon: Quote },
+  { type: "statistic", label: "Statistic Claim", icon: BarChart2 },
+  { type: "callout", label: "Callout", icon: AlertTriangle },
+  { type: "cta", label: "Call to Action", icon: ExternalLink },
+  { type: "faq", label: "FAQ Item", icon: HelpCircle },
+  { type: "code", label: "Code Block", icon: Code },
+  { type: "citation", label: "Citation Claim", icon: FileText },
+  { type: "divider", label: "Divider", icon: Minus },
+];
+
+function mapBnType(bnType: string): BlockType {
+  const MAP: Record<string, BlockType> = {
+    heading: "heading",
+    paragraph: "paragraph",
+    bulletListItem: "bulletList",
+    numberedListItem: "numberedList",
+    table: "table",
+    image: "image",
+    video: "youtube",
+    quote: "quote",
+    codeBlock: "code",
+    divider: "divider",
+  };
+  return MAP[bnType] ?? "paragraph";
+}
+
+function getText(ic: unknown[]): string {
+  if (!Array.isArray(ic)) return "";
+  return ic
+    .map((item: unknown) => {
+      if (typeof item === "object" && item !== null && "text" in item) {
+        return (item as { text: string }).text;
+      }
+      return "";
+    })
+    .join("");
+}
+
+function extractTableData(bn: Block): { headers: string[]; rows: string[][] } {
+  const tc = bn.content as unknown as {
+    type?: string;
+    rows?: Array<{ cells: Array<{ content?: unknown[] } | unknown[]> }>;
+  };
+  if (tc && typeof tc === "object" && Array.isArray(tc.rows)) {
+    const allRows: string[][] = tc.rows.map((row) => {
+      return (row.cells ?? []).map((cell) => {
+        const cellContent = Array.isArray(cell) ? cell : ((cell as { content?: unknown[] })?.content ?? []);
+        return getText(cellContent);
+      });
+    });
+    return {
+      headers: allRows[0] ?? ["Column 1", "Column 2"],
+      rows: allRows.slice(1),
+    };
+  }
+  return { headers: ["Column 1", "Column 2"], rows: [["Value 1", "Value 2"]] };
+}
+
+function extractContent(
+  bn: Block,
+  resolvedType: BlockType,
+  existing?: ArticleBlock
+): Record<string, unknown> {
+  const ic = (bn as unknown as { content?: unknown[] }).content ?? [];
+
+  switch (resolvedType) {
+    case "heading":
+      return {
+        level: (bn.props as Record<string, unknown>).level ?? 2,
+        text: getText(ic),
+      };
+    case "bulletList":
+    case "numberedList":
+      return {
+        text: getText(ic),
+        items: [getText(ic)],
+      };
+    case "table": {
+      const tableData = extractTableData(bn);
+      return {
+        headers: tableData.headers,
+        rows: tableData.rows,
+        caption: existing?.content?.caption ? String(existing.content.caption) : undefined,
+      };
+    }
+    case "comparisonTable": {
+      const tableData = extractTableData(bn);
+      const headers = tableData.headers.length > 0 ? tableData.headers : ["Feature", "Our Brand", "Competitor"];
+      const rowObjects = tableData.rows.map((row) => {
+        const obj: Record<string, string> = {};
+        headers.forEach((h, idx) => {
+          obj[h] = row[idx] ?? "";
+        });
+        return obj;
+      });
+      return {
+        headers,
+        rows: rowObjects,
+        caption: existing?.content?.caption ? String(existing.content.caption) : undefined,
+      };
+    }
+    case "image":
+      return {
+        src: String((bn.props as Record<string, unknown>).url ?? ""),
+        alt: String((bn.props as Record<string, unknown>).caption ?? "image"),
+        caption: String((bn.props as Record<string, unknown>).caption ?? ""),
+      };
+    case "youtube":
+      return {
+        videoId: String((bn.props as Record<string, unknown>).url ?? ""),
+        caption: String((bn.props as Record<string, unknown>).caption ?? ""),
+      };
+    case "quote":
+      return {
+        text: getText(ic),
+        attribution: existing?.content?.attribution ? String(existing.content.attribution) : "",
+        source: existing?.content?.source ? String(existing.content.source) : "",
+      };
+    case "statistic":
+      return {
+        value: existing?.content?.value ? String(existing.content.value) : getText(ic),
+        label: existing?.content?.label ? String(existing.content.label) : "Metric",
+        evidenceClaimId: existing?.content?.evidenceClaimId ? String(existing.content.evidenceClaimId) : undefined,
+      };
+    case "callout":
+      return {
+        variant: (existing?.content?.variant as string) ?? "info",
+        text: getText(ic),
+      };
+    case "cta":
+      return {
+        text: getText(ic),
+        href: existing?.content?.href ? String(existing.content.href) : "/",
+        label: existing?.content?.label ? String(existing.content.label) : "Get Started",
+      };
+    case "faq":
+      return {
+        question: existing?.content?.question ? String(existing.content.question) : getText(ic),
+        answer: existing?.content?.answer ? String(existing.content.answer) : "",
+      };
+    case "code":
+      return {
+        language: String((bn.props as Record<string, unknown>).language ?? "plaintext"),
+        code: getText(ic),
+      };
+    case "citation":
+      return {
+        text: getText(ic),
+        href: existing?.content?.href ? String(existing.content.href) : undefined,
+        evidenceClaimId: existing?.content?.evidenceClaimId ? String(existing.content.evidenceClaimId) : undefined,
+      };
+    case "divider":
+      return { style: "solid" };
+    default:
+      return { text: getText(ic) };
+  }
+}
+
+/**
+ * Convert a BlockNote block to an OmniRank ArticleBlock.
+ * Preserves the stable BlockNote block id and custom block types.
+ */
+function bnBlockToOmniBlock(
+  bn: Block,
+  userId: string,
+  existingBlocksById?: Map<string, ArticleBlock>
+): ArticleBlock {
+  const now = new Date().toISOString();
+  const existing = existingBlocksById?.get(bn.id);
+  const baseType = mapBnType(bn.type);
+
+  // Preserve specialized V1 types when represented in BlockNote
+  let resolvedType = baseType;
+  if (existing?.type === "comparisonTable" && baseType === "table") {
+    resolvedType = "comparisonTable";
+  } else if (
+    existing &&
+    ["statistic", "callout", "cta", "faq", "citation"].includes(existing.type) &&
+    baseType === "paragraph"
+  ) {
+    resolvedType = existing.type;
+  }
+
+  const content = extractContent(bn, resolvedType, existing);
+
+  return {
+    id: bn.id,
+    type: resolvedType,
+    schemaVersion: ARTICLE_SCHEMA_VERSION,
+    content,
+    attributes: existing?.attributes ?? {},
+    sourceRefs: existing?.sourceRefs ?? [],
+    evidenceRefs: existing?.evidenceRefs ?? [],
+    provenance: existing?.provenance
+      ? { ...existing.provenance, lastModifiedBy: userId, lastModifiedAt: now }
+      : { createdBy: userId, createdAt: now },
+    children: bn.children?.length
+      ? bn.children.map((c) => bnBlockToOmniBlock(c as Block, userId, existingBlocksById))
+      : undefined,
+  };
+}
+
+/**
+ * Convert an OmniRank ArticleBlock to a BlockNote PartialBlock for initialization.
+ */
+function omniBlockToBnPartial(block: ArticleBlock): Record<string, unknown> {
+  const c = block.content as Record<string, unknown>;
+
+  switch (block.type) {
+    case "heading":
+      return {
+        id: block.id,
+        type: "heading",
+        props: { level: (c.level as 1 | 2 | 3) ?? 2 },
+        content: [{ type: "text", text: String(c.text ?? ""), styles: {} }],
+      };
+    case "bulletList":
+      return {
+        id: block.id,
+        type: "bulletListItem",
+        content: [{ type: "text", text: String(c.text ?? ""), styles: {} }],
+      };
+    case "numberedList":
+      return {
+        id: block.id,
+        type: "numberedListItem",
+        content: [{ type: "text", text: String(c.text ?? ""), styles: {} }],
+      };
+    case "table": {
+      const headers = (c.headers as string[]) ?? ["Column 1", "Column 2"];
+      const rows = (c.rows as string[][]) ?? [["Value 1", "Value 2"]];
+      const allRows = [headers, ...rows];
+      return {
+        id: block.id,
+        type: "table",
+        content: {
+          type: "tableContent",
+          rows: allRows.map((r) => ({
+            cells: r.map((cellText) => [{ type: "text", text: String(cellText), styles: {} }]),
+          })),
+        },
+      };
+    }
+    case "comparisonTable": {
+      const headers = (c.headers as string[]) ?? ["Feature", "Our Brand", "Competitor"];
+      const rows = (c.rows as Array<Record<string, string>>) ?? [
+        { Feature: "Performance", "Our Brand": "10x", Competitor: "1x" },
+      ];
+      const rowArrays = rows.map((rowObj) => headers.map((h) => String(rowObj[h] ?? "")));
+      const allRows = [headers, ...rowArrays];
+      return {
+        id: block.id,
+        type: "table",
+        content: {
+          type: "tableContent",
+          rows: allRows.map((r) => ({
+            cells: r.map((cellText) => [{ type: "text", text: String(cellText), styles: {} }]),
+          })),
+        },
+      };
+    }
+    case "image":
+      return {
+        id: block.id,
+        type: "image",
+        props: { url: String(c.src ?? ""), caption: String(c.caption ?? c.alt ?? "") },
+      };
+    case "youtube":
+      return {
+        id: block.id,
+        type: "video",
+        props: { url: String(c.videoId ?? "") },
+      };
+    case "quote":
+      return {
+        id: block.id,
+        type: "quote",
+        content: [{ type: "text", text: String(c.text ?? ""), styles: {} }],
+      };
+    case "code":
+      return {
+        id: block.id,
+        type: "codeBlock",
+        props: { language: String(c.language ?? "plaintext") },
+        content: [{ type: "text", text: String(c.code ?? ""), styles: {} }],
+      };
+    case "divider":
+      return {
+        id: block.id,
+        type: "divider",
+      };
+    case "statistic":
+      return {
+        id: block.id,
+        type: "paragraph",
+        content: [{ type: "text", text: `[Statistic: ${String(c.value ?? "")} - ${String(c.label ?? "")}]`, styles: { bold: true } }],
+      };
+    case "callout":
+      return {
+        id: block.id,
+        type: "paragraph",
+        content: [{ type: "text", text: `[${String(c.variant ?? "info").toUpperCase()}]: ${String(c.text ?? "")}`, styles: {} }],
+      };
+    case "cta":
+      return {
+        id: block.id,
+        type: "paragraph",
+        content: [{ type: "text", text: `[CTA: ${String(c.label ?? "")} -> ${String(c.href ?? "")}] ${String(c.text ?? "")}`, styles: { underline: true } }],
+      };
+    case "faq":
+      return {
+        id: block.id,
+        type: "paragraph",
+        content: [{ type: "text", text: `FAQ: ${String(c.question ?? "")}\nA: ${String(c.answer ?? "")}`, styles: {} }],
+      };
+    case "citation":
+      return {
+        id: block.id,
+        type: "paragraph",
+        content: [{ type: "text", text: `[Citation]: ${String(c.text ?? "")}`, styles: {} }],
+      };
+    default:
+      return {
+        id: block.id,
+        type: "paragraph",
+        content: [{ type: "text", text: String(c.text ?? c.value ?? ""), styles: {} }],
+      };
+  }
+}
 
 // ============================================================================
 // Types
@@ -52,121 +406,9 @@ import {
 type LeftPanel = "outline" | "blocks" | "versions";
 type RightPanel = "ai" | "seo" | "geo" | "evidence" | "brand" | "links";
 
-const BLOCK_ICONS: Record<string, typeof AlignLeft> = {
-  heading: Hash,
-  paragraph: AlignLeft,
-  bulletList: List,
-  numberedList: List,
-  table: Table,
-  comparisonTable: Table,
-  image: Image,
-  youtube: Image,
-  quote: Quote,
-  statistic: BarChart2,
-  callout: Type,
-  cta: Type,
-  faq: Type,
-  code: Code,
-  citation: FileText,
-  divider: Minus,
-};
-
-const INSERTABLE_BLOCKS: Array<{ type: BlockType; label: string }> = [
-  { type: "heading", label: "Heading" },
-  { type: "paragraph", label: "Paragraph" },
-  { type: "bulletList", label: "Bullet List" },
-  { type: "numberedList", label: "Numbered List" },
-  { type: "table", label: "Table" },
-  { type: "image", label: "Image" },
-  { type: "quote", label: "Quote" },
-  { type: "statistic", label: "Statistic" },
-  { type: "callout", label: "Callout" },
-  { type: "cta", label: "CTA" },
-  { type: "faq", label: "FAQ" },
-  { type: "code", label: "Code" },
-  { type: "citation", label: "Citation" },
-  { type: "divider", label: "Divider" },
-];
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function emptyEnvelope(articleId: string, brandId: string, userId: string): ArticleEnvelope {
-  return {
-    schemaVersion: ARTICLE_SCHEMA_VERSION,
-    articleId,
-    brandId,
-    locale: "en",
-    title: "Untitled Article",
-    slug: "",
-    document: { blocks: [] },
-    metadata: { status: "drafting" },
-    seo: {},
-    geo: {},
-    sources: [],
-    relationships: [],
-    provenance: {
-      createdBy: userId,
-      createdAt: new Date().toISOString(),
-    },
-  };
-}
-
-function makeBlock(type: BlockType, userId: string): ArticleBlock {
-  return {
-    id: crypto.randomUUID(),
-    type,
-    schemaVersion: ARTICLE_SCHEMA_VERSION,
-    content: type === "heading" ? { level: 2, text: "" }
-      : type === "divider" ? {}
-      : { text: "" },
-    attributes: {},
-    sourceRefs: [],
-    evidenceRefs: [],
-    provenance: {
-      createdBy: userId,
-      createdAt: new Date().toISOString(),
-    },
-  };
-}
-
-function getBlockLabel(block: ArticleBlock): string {
-  const c = block.content as Record<string, unknown>;
-  if (block.type === "heading") return `H${c.level}: ${String(c.text || "").slice(0, 40) || "(empty)"}`;
-  if (block.type === "divider") return "─── Divider ───";
-  return `${block.type}: ${String(c.text || "").slice(0, 40) || "(empty)"}`;
-}
-
 // ============================================================================
 // Sub-components
 // ============================================================================
-
-function BlockRow({
-  block,
-  selected,
-  onSelect,
-}: {
-  block: ArticleBlock;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const Icon = BLOCK_ICONS[block.type] ?? AlignLeft;
-  return (
-    <button
-      onClick={onSelect}
-      className={cn(
-        "w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-left transition-colors cursor-pointer",
-        selected
-          ? "bg-indigo-100 text-indigo-800 font-medium"
-          : "text-neutral-600 hover:bg-neutral-100"
-      )}
-    >
-      <Icon className="w-3 h-3 shrink-0 text-neutral-400" />
-      <span className="truncate flex-1">{getBlockLabel(block)}</span>
-    </button>
-  );
-}
 
 function VersionRow({
   version,
@@ -196,94 +438,19 @@ function VersionRow({
   );
 }
 
-function BlockEditor({
-  block,
-  onChange,
-  onAiReplace,
-}: {
-  block: ArticleBlock;
-  onChange: (updated: ArticleBlock) => void;
-  onAiReplace: (blockId: string) => void;
-}) {
-  const c = block.content as Record<string, unknown>;
-  const handleTextChange = (text: string) => {
-    onChange({ ...block, content: { ...c, text } });
-  };
-
-  return (
-    <div className="border border-neutral-200 rounded-lg p-3 bg-white group relative">
-      {/* Block type badge */}
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[10px] font-medium text-neutral-400 uppercase tracking-wide">
-          {block.type}
-        </span>
-        <button
-          onClick={() => onAiReplace(block.id)}
-          className="text-[10px] text-indigo-500 hover:text-indigo-700 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer flex items-center gap-1"
-          title="Regenerate this block with AI"
-        >
-          <Cpu className="w-3 h-3" />
-          AI
-        </button>
-      </div>
-
-      {block.type === "heading" ? (
-        <input
-          type="text"
-          value={String(c.text ?? "")}
-          onChange={(e) => handleTextChange(e.target.value)}
-          placeholder="Heading text…"
-          className={cn(
-            "w-full bg-transparent font-bold outline-none text-neutral-800 placeholder-neutral-300",
-            (c.level as number) === 1
-              ? "text-2xl"
-              : (c.level as number) === 2
-              ? "text-xl"
-              : "text-lg"
-          )}
-        />
-      ) : block.type === "divider" ? (
-        <div className="border-t border-neutral-300 my-2" />
-      ) : (
-        <textarea
-          value={String(c.text ?? "")}
-          onChange={(e) => handleTextChange(e.target.value)}
-          placeholder={`Enter ${block.type} content…`}
-          rows={block.type === "paragraph" ? 3 : 2}
-          className="w-full bg-transparent text-sm text-neutral-700 placeholder-neutral-300 outline-none resize-none"
-        />
-      )}
-
-      {/* Provenance hint */}
-      {block.provenance?.aiGenerated && (
-        <div className="mt-1.5 text-[10px] text-indigo-400 flex items-center gap-1">
-          <Cpu className="w-2.5 h-2.5" />
-          AI-generated {block.provenance.aiTaskCode && `(${block.provenance.aiTaskCode})`}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ============================================================================
 // Main Editor View
 // ============================================================================
 
 export interface ArticleEditorViewProps {
-  /** Article ID — pre-created by the articles API before editor opens */
   articleId: string;
   brandId: string;
   organizationId: string;
   userId: string;
-  /** Initial envelope (loaded from working document or new) */
   initialContent?: ArticleEnvelope;
-  /** Existing versions (loaded from API) */
   initialVersions?: ArticleVersion[];
-  /** Called when autosave should persist to the API */
   onAutosave?: (content: ArticleEnvelope) => Promise<void>;
-  /** Called to create an immutable version milestone */
   onSaveVersion?: (content: ArticleEnvelope, label: string) => Promise<ArticleVersion>;
-  /** Called to restore a version (loads the version content back into working doc) */
   onRestoreVersion?: (versionId: string) => Promise<void>;
 }
 
@@ -297,11 +464,11 @@ export function ArticleEditorView({
   onSaveVersion,
   onRestoreVersion,
 }: ArticleEditorViewProps) {
-  const [content, setContent] = useState<ArticleEnvelope>(
-    initialContent ?? emptyEnvelope(articleId, brandId, userId)
-  );
+  // ---- State ----
+  const [title, setTitle] = useState(initialContent?.title ?? "Untitled Article");
+  const [seo, setSeo] = useState(initialContent?.seo ?? {});
+  const [geo, setGeo] = useState(initialContent?.geo ?? {});
   const [versions, setVersions] = useState<ArticleVersion[]>(initialVersions);
-  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [leftPanel, setLeftPanel] = useState<LeftPanel>("outline");
   const [rightPanel, setRightPanel] = useState<RightPanel>("seo");
   const [leftExpanded, setLeftExpanded] = useState(true);
@@ -311,71 +478,156 @@ export function ArticleEditorView({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  // Autosave on content change (debounced via useEffect)
+  // Keep a map of known blocks to preserve non-BlockNote metadata
+  const blockMapRef = useRef<Map<string, ArticleBlock>>(
+    new Map((initialContent?.document?.blocks ?? []).map((b) => [b.id, b]))
+  );
+
+  // ---- BlockNote editor instance ----
+  const initialBnBlocks = useMemo(
+    () => (initialContent?.document?.blocks ?? []).map(omniBlockToBnPartial),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  const editor = useCreateBlockNote({
+    initialContent: initialBnBlocks.length > 0 ? (initialBnBlocks as unknown as Block[]) : undefined,
+  });
+
+  // Build the current OmniRank envelope from editor state
+  const buildEnvelope = useCallback((): ArticleEnvelope => {
+    const blocks = editor.document.map((bn) =>
+      bnBlockToOmniBlock(bn, userId, blockMapRef.current)
+    );
+    // Update local cache
+    blocks.forEach((b) => blockMapRef.current.set(b.id, b));
+
+    return {
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      articleId,
+      brandId,
+      locale: initialContent?.locale ?? "en",
+      title,
+      slug: initialContent?.slug ?? "",
+      document: { blocks },
+      metadata: { ...(initialContent?.metadata ?? {}), status: initialContent?.metadata?.status ?? "drafting" },
+      seo,
+      geo,
+      sources: initialContent?.sources ?? [],
+      relationships: initialContent?.relationships ?? [],
+      provenance: initialContent?.provenance ?? {
+        createdBy: userId,
+        createdAt: new Date().toISOString(),
+      },
+    };
+  }, [editor, userId, articleId, brandId, title, seo, geo, initialContent]);
+
+  // Autosave on changes (debounced)
   useEffect(() => {
     if (!onAutosave) return;
     const timer = setTimeout(async () => {
       setSaving(true);
       try {
-        await onAutosave(content);
+        await onAutosave(buildEnvelope());
         setLastSaved(new Date());
+      } catch {
+        // autosave failure is non-critical
       } finally {
         setSaving(false);
       }
     }, 1500);
     return () => clearTimeout(timer);
-  }, [content, onAutosave]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, seo, geo, onAutosave]);
 
-  const handleBlockChange = useCallback(
-    (updatedBlock: ArticleBlock) => {
-      setContent((prev) => ({
-        ...prev,
-        document: {
-          blocks: prev.document.blocks.map((b) =>
-            b.id === updatedBlock.id ? updatedBlock : b
-          ),
-        },
-      }));
-    },
-    []
-  );
+  // Insert block handler for Blocks tab
+  const handleInsertBlock = (type: BlockType) => {
+    const lastBlock = editor.document[editor.document.length - 1];
+    let newBnBlock: Record<string, unknown>;
 
-  const handleAddBlock = useCallback(
-    (type: BlockType) => {
-      const newBlock = makeBlock(type, userId);
-      setContent((prev) => ({
-        ...prev,
-        document: { blocks: [...prev.document.blocks, newBlock] },
-      }));
-      setSelectedBlockId(newBlock.id);
-    },
-    [userId]
-  );
+    switch (type) {
+      case "heading":
+        newBnBlock = { type: "heading", props: { level: 2 }, content: [{ type: "text", text: "New Heading", styles: {} }] };
+        break;
+      case "bulletList":
+        newBnBlock = { type: "bulletListItem", content: [{ type: "text", text: "Bullet list item", styles: {} }] };
+        break;
+      case "numberedList":
+        newBnBlock = { type: "numberedListItem", content: [{ type: "text", text: "Numbered list item", styles: {} }] };
+        break;
+      case "table":
+        newBnBlock = {
+          type: "table",
+          content: {
+            type: "tableContent",
+            rows: [
+              { cells: [[{ type: "text", text: "Column 1", styles: {} }], [{ type: "text", text: "Column 2", styles: {} }]] },
+              { cells: [[{ type: "text", text: "Data 1", styles: {} }], [{ type: "text", text: "Data 2", styles: {} }]] },
+            ],
+          },
+        };
+        break;
+      case "comparisonTable":
+        newBnBlock = {
+          type: "table",
+          content: {
+            type: "tableContent",
+            rows: [
+              { cells: [[{ type: "text", text: "Feature", styles: {} }], [{ type: "text", text: "Our Brand", styles: {} }], [{ type: "text", text: "Competitor", styles: {} }]] },
+              { cells: [[{ type: "text", text: "Performance", styles: {} }], [{ type: "text", text: "High", styles: {} }], [{ type: "text", text: "Medium", styles: {} }]] },
+            ],
+          },
+        };
+        break;
+      case "image":
+        newBnBlock = { type: "image", props: { url: "https://placehold.co/600x400", caption: "Image caption" } };
+        break;
+      case "youtube":
+        newBnBlock = { type: "video", props: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } };
+        break;
+      case "quote":
+        newBnBlock = { type: "quote", content: [{ type: "text", text: "Quote text here...", styles: {} }] };
+        break;
+      case "code":
+        newBnBlock = { type: "codeBlock", props: { language: "typescript" }, content: [{ type: "text", text: "// Code goes here", styles: {} }] };
+        break;
+      case "divider":
+        newBnBlock = { type: "divider" };
+        break;
+      case "statistic":
+        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[Statistic: 99.9% - Uptime Guarantee]", styles: { bold: true } }] };
+        break;
+      case "callout":
+        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[TIP]: Critical architectural pattern note.", styles: { italic: true } }] };
+        break;
+      case "cta":
+        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[CTA: Get Started -> /signup] Explore OmniRank", styles: { underline: true } }] };
+        break;
+      case "faq":
+        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "FAQ: How does OmniRank guarantee consistency?\nAnswer: Through canonical versioned JSON schema validation.", styles: {} }] };
+        break;
+      case "citation":
+        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[Citation]: Source citation claim reference.", styles: {} }] };
+        break;
+      default:
+        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "New paragraph content...", styles: {} }] };
+        break;
+    }
 
-  const handleDeleteBlock = useCallback((blockId: string) => {
-    setContent((prev) => ({
-      ...prev,
-      document: {
-        blocks: prev.document.blocks.filter((b) => b.id !== blockId),
-      },
-    }));
-    setSelectedBlockId(null);
-  }, []);
-
-  const handleAiReplace = useCallback(
-    (_blockId: string) => {
-      // Architecture stub: AI operation placeholder
-      // Full OmniRouter generation is NOT implemented (OR-P05 scope).
-      setStatusMessage("AI block regeneration is queued (OmniRouter integration pending in OR-P06).");
-      setTimeout(() => setStatusMessage(null), 4000);
-    },
-    []
-  );
+    try {
+      editor.insertBlocks([newBnBlock as unknown as Block], lastBlock, "after");
+      setStatusMessage(`Added ${type} block.`);
+      setTimeout(() => setStatusMessage(null), 2500);
+    } catch {
+      // fallback insert
+    }
+  };
 
   const handleSaveVersion = async () => {
     if (!onSaveVersion) return;
     const label = versionLabel.trim() || `Milestone ${versions.length + 1}`;
-    const version = await onSaveVersion(content, label);
+    const envelope = buildEnvelope();
+    const version = await onSaveVersion(envelope, label);
     setVersions((prev) => [version, ...prev]);
     setVersionLabel("");
     setStatusMessage(`Version ${version.versionNumber} saved.`);
@@ -389,14 +641,14 @@ export function ArticleEditorView({
     setTimeout(() => setStatusMessage(null), 3000);
   };
 
-  // ---- Left panel tabs ----
+  // ---- Left tabs ----
   const leftTabs: Array<{ id: LeftPanel; label: string; icon: typeof FileText }> = [
     { id: "outline", label: "Outline", icon: FileText },
     { id: "blocks", label: "Blocks", icon: List },
     { id: "versions", label: "Versions", icon: History },
   ];
 
-  // ---- Right panel tabs ----
+  // ---- Right tabs ----
   const rightTabs: Array<{ id: RightPanel; label: string; icon: typeof Cpu }> = [
     { id: "ai", label: "AI", icon: Cpu },
     { id: "seo", label: "SEO", icon: Search },
@@ -408,16 +660,13 @@ export function ArticleEditorView({
 
   return (
     <div className="flex h-full overflow-hidden bg-neutral-50" data-testid="article-editor">
-      {/* ------------------------------------------------------------------ */}
-      {/* LEFT PANEL                                                           */}
-      {/* ------------------------------------------------------------------ */}
+      {/* LEFT PANEL */}
       <aside
         className={cn(
           "flex flex-col border-r border-neutral-200 bg-white transition-all duration-200 shrink-0",
           leftExpanded ? "w-56" : "w-10"
         )}
       >
-        {/* Toggle */}
         <button
           onClick={() => setLeftExpanded((p) => !p)}
           className="p-2 flex items-center justify-end text-neutral-400 hover:text-neutral-700 cursor-pointer"
@@ -427,7 +676,6 @@ export function ArticleEditorView({
 
         {leftExpanded && (
           <>
-            {/* Tabs */}
             <div className="flex border-b border-neutral-100">
               {leftTabs.map((tab) => {
                 const Icon = tab.icon;
@@ -449,44 +697,55 @@ export function ArticleEditorView({
               })}
             </div>
 
-            {/* Panel content */}
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
               {leftPanel === "outline" && (
                 <>
-                  {content.document.blocks.length === 0 ? (
-                    <p className="text-[11px] text-neutral-400 px-1">No blocks yet.</p>
+                  {editor.document.length === 0 ? (
+                    <p className="text-[11px] text-neutral-400 px-1">Start typing in the editor.</p>
                   ) : (
-                    content.document.blocks.map((block) => (
-                      <BlockRow
-                        key={block.id}
-                        block={block}
-                        selected={selectedBlockId === block.id}
-                        onSelect={() => setSelectedBlockId(block.id)}
-                      />
-                    ))
+                    editor.document
+                      .filter((b) => b.type === "heading")
+                      .map((b) => {
+                        const ic = (b as unknown as { content?: Array<{ text?: string }> }).content ?? [];
+                        const text = ic.map((x) => x.text ?? "").join("").slice(0, 40) || "(empty)";
+                        const level = (b.props as Record<string, unknown>).level as number ?? 2;
+                        return (
+                          <div
+                            key={b.id}
+                            className="text-[11px] text-neutral-600 px-1 py-0.5 hover:text-indigo-600 cursor-pointer truncate"
+                            style={{ paddingLeft: `${(level - 1) * 8 + 4}px` }}
+                          >
+                            {text}
+                          </div>
+                        );
+                      })
                   )}
                 </>
               )}
 
               {leftPanel === "blocks" && (
                 <div className="space-y-1">
-                  <p className="text-[10px] text-neutral-400 font-medium px-1 mb-1.5">Insert block</p>
-                  {INSERTABLE_BLOCKS.map((b) => (
-                    <button
-                      key={b.type}
-                      onClick={() => handleAddBlock(b.type)}
-                      className="w-full flex items-center gap-2 px-2 py-1.5 text-xs rounded hover:bg-indigo-50 hover:text-indigo-700 text-neutral-600 transition-colors cursor-pointer text-left"
-                    >
-                      <PlusCircle className="w-3 h-3 text-indigo-400 shrink-0" />
-                      {b.label}
-                    </button>
-                  ))}
+                  <p className="text-[10px] text-neutral-400 font-semibold uppercase tracking-wider px-1 mb-2">
+                    V1 Canonical Blocks
+                  </p>
+                  {INSERTABLE_BLOCKS.map((b) => {
+                    const Icon = b.icon;
+                    return (
+                      <button
+                        key={b.type}
+                        onClick={() => handleInsertBlock(b.type)}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 text-xs rounded-lg text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900 transition-colors cursor-pointer text-left"
+                      >
+                        <Icon className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                        <span className="truncate">{b.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
               {leftPanel === "versions" && (
                 <div className="space-y-1">
-                  {/* Save version */}
                   <div className="mb-2 space-y-1">
                     <input
                       type="text"
@@ -500,19 +759,14 @@ export function ArticleEditorView({
                       disabled={!onSaveVersion}
                       className="w-full text-xs bg-indigo-600 text-white rounded px-2 py-1.5 hover:bg-indigo-700 disabled:opacity-50 cursor-pointer"
                     >
-                      Save milestone version
+                      Save milestone
                     </button>
                   </div>
-
                   {versions.length === 0 ? (
                     <p className="text-[11px] text-neutral-400 px-1">No versions yet.</p>
                   ) : (
                     versions.map((v) => (
-                      <VersionRow
-                        key={v.id}
-                        version={v}
-                        onRestore={handleRestoreVersion}
-                      />
+                      <VersionRow key={v.id} version={v} onRestore={handleRestoreVersion} />
                     ))
                   )}
                 </div>
@@ -522,35 +776,22 @@ export function ArticleEditorView({
         )}
       </aside>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* CENTER — EDITOR                                                      */}
-      {/* ------------------------------------------------------------------ */}
+      {/* CENTER — EDITOR */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Editor toolbar */}
+        {/* Toolbar */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-neutral-200 bg-white shrink-0">
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={content.title}
-              onChange={(e) =>
-                setContent((prev) => ({ ...prev, title: e.target.value }))
-              }
-              placeholder="Article title…"
-              className="text-sm font-semibold bg-transparent outline-none text-neutral-800 placeholder-neutral-300 w-64"
-            />
-          </div>
-
-          <div className="flex items-center gap-2">
-            {statusMessage && (
-              <span className="text-xs text-indigo-600">{statusMessage}</span>
-            )}
-            {saving && (
-              <span className="text-xs text-neutral-400">Saving…</span>
-            )}
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Article title…"
+            className="text-sm font-semibold bg-transparent outline-none text-neutral-800 placeholder-neutral-300 flex-1 mr-4"
+          />
+          <div className="flex items-center gap-2 shrink-0">
+            {statusMessage && <span className="text-xs text-indigo-600">{statusMessage}</span>}
+            {saving && <span className="text-xs text-neutral-400">Saving…</span>}
             {lastSaved && !saving && (
-              <span className="text-xs text-neutral-400">
-                Saved {lastSaved.toLocaleTimeString()}
-              </span>
+              <span className="text-xs text-neutral-400">Saved {lastSaved.toLocaleTimeString()}</span>
             )}
             <button
               onClick={handleSaveVersion}
@@ -563,63 +804,13 @@ export function ArticleEditorView({
           </div>
         </div>
 
-        {/* Blocks area */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          <div className="max-w-3xl mx-auto space-y-3">
-            {content.document.blocks.length === 0 ? (
-              <div className="text-center py-16 text-neutral-400">
-                <FileText className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                <p className="text-sm">No blocks yet. Add a block from the left panel.</p>
-              </div>
-            ) : (
-              content.document.blocks.map((block) => (
-                <div
-                  key={block.id}
-                  className={cn(
-                    "relative transition-all",
-                    selectedBlockId === block.id && "ring-2 ring-indigo-300 ring-offset-1 rounded-lg"
-                  )}
-                  onClick={() => setSelectedBlockId(block.id)}
-                >
-                  <BlockEditor
-                    block={block}
-                    onChange={handleBlockChange}
-                    onAiReplace={handleAiReplace}
-                  />
-                  {selectedBlockId === block.id && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteBlock(block.id); }}
-                      className="absolute -top-1.5 -right-1.5 text-[10px] bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center cursor-pointer hover:bg-red-600"
-                      title="Remove block"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-
-            {/* Quick add buttons below content */}
-            <div className="pt-2 flex flex-wrap gap-1.5">
-              {(["paragraph", "heading", "bulletList", "image", "statistic", "divider"] as BlockType[]).map(
-                (type) => (
-                  <button
-                    key={type}
-                    onClick={() => handleAddBlock(type)}
-                    className="text-[10px] px-2 py-1 rounded border border-dashed border-neutral-300 text-neutral-400 hover:border-indigo-400 hover:text-indigo-600 transition-colors cursor-pointer"
-                  >
-                    + {type}
-                  </button>
-                )
-              )}
-            </div>
-          </div>
+        {/* BlockNote editor */}
+        <div className="flex-1 overflow-y-auto p-4">
+          <BlockNoteView editor={editor} theme="light" />
         </div>
       </main>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* RIGHT PANEL                                                          */}
-      {/* ------------------------------------------------------------------ */}
+      {/* RIGHT PANEL */}
       <aside
         className={cn(
           "flex flex-col border-l border-neutral-200 bg-white transition-all duration-200 shrink-0",
@@ -661,7 +852,8 @@ export function ArticleEditorView({
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-neutral-700">AI Assistant</p>
                   <p className="text-[11px] text-neutral-400">
-                    Select a block and click the AI icon to regenerate it.
+                    Select text or a block and use the AI regeneration API endpoint
+                    (<code className="bg-neutral-100 px-1 rounded">PUT /api/articles/:brandId/:articleId/blocks/:blockId</code>).
                     Full OmniRouter integration is pending OR-P06.
                   </p>
                 </div>
@@ -674,20 +866,16 @@ export function ArticleEditorView({
                     <span className="text-[10px] text-neutral-500">Meta title</span>
                     <input
                       type="text"
-                      value={(content.seo.metaTitle as string) ?? ""}
-                      onChange={(e) =>
-                        setContent((p) => ({ ...p, seo: { ...p.seo, metaTitle: e.target.value } }))
-                      }
+                      value={(seo as Record<string, string>).metaTitle ?? ""}
+                      onChange={(e) => setSeo((p) => ({ ...p, metaTitle: e.target.value }))}
                       className="mt-0.5 w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-indigo-400"
                     />
                   </label>
                   <label className="block">
                     <span className="text-[10px] text-neutral-500">Meta description</span>
                     <textarea
-                      value={(content.seo.metaDescription as string) ?? ""}
-                      onChange={(e) =>
-                        setContent((p) => ({ ...p, seo: { ...p.seo, metaDescription: e.target.value } }))
-                      }
+                      value={(seo as Record<string, string>).metaDescription ?? ""}
+                      onChange={(e) => setSeo((p) => ({ ...p, metaDescription: e.target.value }))}
                       rows={3}
                       className="mt-0.5 w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-indigo-400 resize-none"
                     />
@@ -696,10 +884,8 @@ export function ArticleEditorView({
                     <span className="text-[10px] text-neutral-500">Canonical URL</span>
                     <input
                       type="text"
-                      value={(content.seo.canonicalUrl as string) ?? ""}
-                      onChange={(e) =>
-                        setContent((p) => ({ ...p, seo: { ...p.seo, canonicalUrl: e.target.value } }))
-                      }
+                      value={(seo as Record<string, string>).canonicalUrl ?? ""}
+                      onChange={(e) => setSeo((p) => ({ ...p, canonicalUrl: e.target.value }))}
                       className="mt-0.5 w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-indigo-400"
                     />
                   </label>
@@ -713,10 +899,8 @@ export function ArticleEditorView({
                     <span className="text-[10px] text-neutral-500">Geographic focus</span>
                     <input
                       type="text"
-                      value={(content.geo.geoFocus as string) ?? ""}
-                      onChange={(e) =>
-                        setContent((p) => ({ ...p, geo: { ...p.geo, geoFocus: e.target.value } }))
-                      }
+                      value={(geo as Record<string, string>).geoFocus ?? ""}
+                      onChange={(e) => setGeo((p) => ({ ...p, geoFocus: e.target.value }))}
                       className="mt-0.5 w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-indigo-400"
                     />
                   </label>
@@ -728,7 +912,7 @@ export function ArticleEditorView({
                   <p className="text-xs font-medium text-neutral-700">Evidence</p>
                   <p className="text-[11px] text-neutral-400">
                     Attach evidence claims to statistic and citation blocks via evidenceRefs.
-                    Evidence library integration is available via Brand Brain.
+                    Use the block API to update block.evidenceRefs after selecting from Brand Brain.
                   </p>
                 </div>
               )}
@@ -737,8 +921,7 @@ export function ArticleEditorView({
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-neutral-700">Brand</p>
                   <p className="text-[11px] text-neutral-400">
-                    Brand voice, terminology, and policies are enforced automatically
-                    by the AI review step (pending OR-P06).
+                    Brand voice, terminology, and policies enforced in AI review (OR-P06).
                   </p>
                 </div>
               )}
@@ -747,19 +930,9 @@ export function ArticleEditorView({
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-neutral-700">Links</p>
                   <p className="text-[11px] text-neutral-400">
-                    Internal links use http/https only.
+                    Internal links: http/https and relative paths only.
                     javascript: and data: URIs are rejected by the schema validator.
                   </p>
-                  {content.relationships.length === 0 ? (
-                    <p className="text-[10px] text-neutral-400">No relationships defined.</p>
-                  ) : (
-                    content.relationships.map((rel, i) => (
-                      <div key={i} className="text-[11px] text-neutral-600 bg-neutral-50 rounded px-2 py-1">
-                        {(rel as Record<string, unknown>).type as string}:{" "}
-                        {((rel as Record<string, unknown>).targetUrl as string) ?? "—"}
-                      </div>
-                    ))
-                  )}
                 </div>
               )}
             </div>

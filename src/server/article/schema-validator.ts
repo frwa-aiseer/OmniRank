@@ -1,13 +1,15 @@
 /**
- * OR-P05 — Article Schema Validator
+ * OR-P05 / OR-P05-FIX — Article Schema Validator
  *
  * Validates ArticleEnvelope and individual ArticleBlock objects.
  * Enforces:
  *   - Stable unique UUIDs per block
  *   - Known schema version
+ *   - Envelope identity: articleId/brandId must match route params when supplied
  *   - Max one H1 heading normally
- *   - Rejects unsafe HTML / JavaScript / data URIs
+ *   - Rejects unsafe HTML / JavaScript / data URIs (allowlist: http/https/relative)
  *   - Statistic/Citation blocks must reference evidenceRefs
+ *   - evidenceRefs and sourceRefs must belong to the same brand
  *   - Unknown block types fail safely (not silently ignored)
  */
 
@@ -21,10 +23,38 @@ import {
 } from "../../types/article.ts";
 
 // ============================================================================
-// URI Safety
+// URI Safety — allowlist based (http/https/relative only)
 // ============================================================================
 
-const UNSAFE_URI_PREFIXES = ["javascript:", "vbscript:", "data:", "file:"];
+/**
+ * Returns true if the URI is on the safe allowlist (http, https, or relative path).
+ * Rejects javascript:, data:, vbscript:, file:, and anything else with a scheme.
+ */
+export function isSafeUri(uri: string): boolean {
+  if (!uri || typeof uri !== "string") return true; // empty/null is not an unsafe URI
+  const trimmed = uri.trim();
+  if (!trimmed) return true;
+  const lower = trimmed.toLowerCase();
+  // Allowlist: http/https absolute, or relative (starts with / or .)
+  if (lower.startsWith("http://") || lower.startsWith("https://")) return true;
+  // Relative paths
+  if (trimmed.startsWith("/") || trimmed.startsWith("./") || trimmed.startsWith("../")) return true;
+  // Fragment-only or query-only
+  if (trimmed.startsWith("#") || trimmed.startsWith("?")) return true;
+  // Has a colon before the first slash → treat as scheme → reject
+  const slashPos = trimmed.indexOf("/");
+  const colonPos = trimmed.indexOf(":");
+  if (colonPos !== -1 && (slashPos === -1 || colonPos < slashPos)) {
+    return false;
+  }
+  return true;
+}
+
+/** @deprecated Use isSafeUri instead (allowlist-based). Kept for backward compat. */
+export function isUnsafeUri(uri: string): boolean {
+  return !isSafeUri(uri);
+}
+
 const UNSAFE_HTML_PATTERNS = [
   /<script[\s>]/i,
   /on\w+\s*=/i,          // onclick=, onerror=, onload=, etc.
@@ -37,19 +67,9 @@ const UNSAFE_HTML_PATTERNS = [
   /<input/i,
 ];
 
-export function isUnsafeUri(uri: string): boolean {
-  if (!uri || typeof uri !== "string") return false;
-  const lower = uri.trim().toLowerCase();
-  return UNSAFE_URI_PREFIXES.some((prefix) => lower.startsWith(prefix));
-}
-
-export function containsUnsafeHtml(text: string): boolean {
-  if (!uri_stringCheck(text)) return false;
+export function containsUnsafeHtml(text: unknown): boolean {
+  if (typeof text !== "string") return false;
   return UNSAFE_HTML_PATTERNS.some((pattern) => pattern.test(text));
-}
-
-function uri_stringCheck(value: unknown): value is string {
-  return typeof value === "string";
 }
 
 // ============================================================================
@@ -63,13 +83,36 @@ export function isValidUuid(id: unknown): boolean {
 }
 
 // ============================================================================
+// Brand Reference Validation
+// ============================================================================
+
+/**
+ * Validates that a brand reference belongs to the same brand.
+ * Returns an error if they differ, null if they match.
+ */
+export function assertSameBrandReference(
+  articleBrandId: string,
+  referencedBrandId: string,
+  context: string
+): BlockValidationError | null {
+  if (articleBrandId !== referencedBrandId) {
+    return {
+      field: context,
+      message: `Cross-brand reference rejected: article brand '${articleBrandId}' does not match referenced brand '${referencedBrandId}'`,
+    };
+  }
+  return null;
+}
+
+// ============================================================================
 // Block Validator
 // ============================================================================
 
 function validateBlock(
   block: ArticleBlock,
   seenIds: Set<string>,
-  errors: BlockValidationError[]
+  errors: BlockValidationError[],
+  articleBrandId?: string
 ): void {
   // 1. Stable UUID
   if (!isValidUuid(block.id)) {
@@ -90,7 +133,7 @@ function validateBlock(
     errors.push({ blockId: block.id, field: "schemaVersion", message: "Block schemaVersion is required" });
   }
 
-  // 4. Content safety checks — scan all string leaf values in content
+  // 4. Content safety checks — scan all string leaf values
   scanObjectForUnsafe(block.content, block.id, "content", errors);
 
   // 5. Attribute safety
@@ -111,10 +154,30 @@ function validateBlock(
     }
   }
 
-  // 7. Recurse into children
+  // 7. Validate evidenceRefs and sourceRefs belong to same brand (if brandId known)
+  if (articleBrandId) {
+    // evidenceRefs: items should be UUIDs; if they encode brandId, check it
+    // For now validate they are valid UUIDs (actual cross-brand DB check is server-side)
+    if (Array.isArray(block.evidenceRefs)) {
+      for (const ref of block.evidenceRefs) {
+        if (!isValidUuid(ref)) {
+          errors.push({ blockId: block.id, field: "evidenceRefs", message: `evidenceRef '${ref}' is not a valid UUID` });
+        }
+      }
+    }
+    if (Array.isArray(block.sourceRefs)) {
+      for (const ref of block.sourceRefs) {
+        if (!isValidUuid(ref)) {
+          errors.push({ blockId: block.id, field: "sourceRefs", message: `sourceRef '${ref}' is not a valid UUID` });
+        }
+      }
+    }
+  }
+
+  // 8. Recurse into children
   if (Array.isArray(block.children)) {
     for (const child of block.children) {
-      validateBlock(child, seenIds, errors);
+      validateBlock(child, seenIds, errors, articleBrandId);
     }
   }
 }
@@ -129,8 +192,11 @@ function scanObjectForUnsafe(
     if (containsUnsafeHtml(obj)) {
       errors.push({ blockId, field, message: `Unsafe HTML/JS detected in ${field}` });
     }
-    if (isUnsafeUri(obj)) {
-      errors.push({ blockId, field, message: `Unsafe URI scheme detected in ${field}` });
+    if (!isSafeUri(obj) && (obj.includes(":") || obj.startsWith("javascript"))) {
+      // Only flag if it looks like a URI attempt (has scheme-like chars)
+      if (!isSafeUri(obj)) {
+        errors.push({ blockId, field, message: `Unsafe URI scheme detected in ${field}` });
+      }
     }
     return;
   }
@@ -139,8 +205,15 @@ function scanObjectForUnsafe(
     return;
   }
   if (obj !== null && typeof obj === "object") {
-    for (const val of Object.values(obj as Record<string, unknown>)) {
-      scanObjectForUnsafe(val, blockId, field, errors);
+    for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
+      // For href/src/url fields, apply full URI allowlist check
+      if (key === "href" || key === "src" || key === "url" || key === "canonicalUrl") {
+        if (typeof val === "string" && !isSafeUri(val)) {
+          errors.push({ blockId, field: `${field}.${key}`, message: `Unsafe URI scheme in ${field}.${key}` });
+        }
+      } else {
+        scanObjectForUnsafe(val, blockId, field, errors);
+      }
     }
   }
 }
@@ -149,7 +222,17 @@ function scanObjectForUnsafe(
 // Envelope Validator
 // ============================================================================
 
-export function validateArticleEnvelope(envelope: ArticleEnvelope): ArticleValidationResult {
+export interface EnvelopeIdentityCheck {
+  /** Expected articleId (from route params / DB row) */
+  expectedArticleId?: string;
+  /** Expected brandId (from route params / brand membership) */
+  expectedBrandId?: string;
+}
+
+export function validateArticleEnvelope(
+  envelope: ArticleEnvelope,
+  identity?: EnvelopeIdentityCheck
+): ArticleValidationResult {
   const errors: BlockValidationError[] = [];
   const seenIds = new Set<string>();
 
@@ -168,20 +251,28 @@ export function validateArticleEnvelope(envelope: ArticleEnvelope): ArticleValid
     errors.push({ field: "brandId", message: "brandId must be a valid UUID" });
   }
 
-  // 4. Title — unsafe HTML check
+  // 4. Envelope identity enforcement
+  if (identity?.expectedArticleId && envelope.articleId !== identity.expectedArticleId) {
+    errors.push({ field: "articleId", message: `Envelope articleId '${envelope.articleId}' does not match route/DB articleId '${identity.expectedArticleId}'` });
+  }
+  if (identity?.expectedBrandId && envelope.brandId !== identity.expectedBrandId) {
+    errors.push({ field: "brandId", message: `Envelope brandId '${envelope.brandId}' does not match authorized brandId '${identity.expectedBrandId}'` });
+  }
+
+  // 5. Title — unsafe HTML check
   if (containsUnsafeHtml(envelope.title)) {
     errors.push({ field: "title", message: "Unsafe HTML/JS in article title" });
   }
 
-  // 5. Blocks
+  // 6. Blocks
   if (!Array.isArray(envelope.document?.blocks)) {
     errors.push({ field: "document.blocks", message: "document.blocks must be an array" });
   } else {
     for (const block of envelope.document.blocks) {
-      validateBlock(block, seenIds, errors);
+      validateBlock(block, seenIds, errors, envelope.brandId);
     }
 
-    // 6. At most one H1 (warning-level: recorded as error with a note)
+    // 7. At most one H1
     const h1Count = envelope.document.blocks.filter(
       (b) => b.type === "heading" && (b.content as { level?: number }).level === 1
     ).length;
@@ -190,12 +281,12 @@ export function validateArticleEnvelope(envelope: ArticleEnvelope): ArticleValid
     }
   }
 
-  // 7. Sources — check any external URLs
+  // 8. Sources — allowlist URI check
   if (Array.isArray(envelope.sources)) {
     for (const src of envelope.sources) {
       if (src && typeof src === "object" && "url" in src) {
         const url = (src as { url?: string }).url;
-        if (url && isUnsafeUri(url)) {
+        if (url && !isSafeUri(url)) {
           errors.push({ field: "sources", message: `Unsafe URI in source: ${url}` });
         }
       }
@@ -207,34 +298,51 @@ export function validateArticleEnvelope(envelope: ArticleEnvelope): ArticleValid
 
 /**
  * Validate a single block replacement (for AI one-block regeneration).
- * Returns errors specific to that block only.
+ * Also enforces that newBlock.id === targetBlockId.
  */
 export function validateBlockReplacement(
   block: ArticleBlock,
-  existingBlockIds: Set<string>
+  existingBlockIds: Set<string>,
+  targetBlockId?: string
 ): BlockValidationError[] {
   const errors: BlockValidationError[] = [];
+
+  // Enforce: replacement block must preserve the target block's ID
+  if (targetBlockId && block.id !== targetBlockId) {
+    errors.push({ blockId: block.id, field: "id", message: `Replacement block id '${block.id}' must equal target blockId '${targetBlockId}'` });
+    return errors; // Further validation is pointless with wrong ID
+  }
+
   const seenIds = new Set<string>(existingBlockIds);
-  // Remove the replaced block's own ID before checking duplicates
   seenIds.delete(block.id);
   validateBlock(block, seenIds, errors);
   return errors;
 }
 
 /**
- * Validates that a brand reference in sources or evidenceRefs belongs to the same brand.
- * brandId is the article's brand; referencedBrandId must match.
+ * Validates that evidenceRefs/sourceRefs on a block come from the same brand.
+ * brandId = article brand; refBrandId = brand of the referenced evidence/source.
+ * This is called server-side after fetching the actual referenced records.
  */
-export function assertSameBrandReference(
-  brandId: string,
-  referencedBrandId: string,
-  context: string
-): BlockValidationError | null {
-  if (brandId !== referencedBrandId) {
-    return {
-      field: context,
-      message: `Cross-brand reference rejected: article brand '${brandId}' does not match referenced brand '${referencedBrandId}'`,
-    };
+export function validateBlockBrandRefs(
+  block: ArticleBlock,
+  articleBrandId: string,
+  getRefBrandId: (refId: string) => string | undefined
+): BlockValidationError[] {
+  const errors: BlockValidationError[] = [];
+  for (const ref of block.evidenceRefs ?? []) {
+    const refBrand = getRefBrandId(ref);
+    if (refBrand) {
+      const err = assertSameBrandReference(articleBrandId, refBrand, "evidenceRefs");
+      if (err) errors.push({ ...err, blockId: block.id });
+    }
   }
-  return null;
+  for (const ref of block.sourceRefs ?? []) {
+    const refBrand = getRefBrandId(ref);
+    if (refBrand) {
+      const err = assertSameBrandReference(articleBrandId, refBrand, "sourceRefs");
+      if (err) errors.push({ ...err, blockId: block.id });
+    }
+  }
+  return errors;
 }

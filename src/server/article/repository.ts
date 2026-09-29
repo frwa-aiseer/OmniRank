@@ -54,7 +54,7 @@ export interface IArticleRepository {
     userId: string
   ): Promise<ArticleVersion>;
   listVersions(articleId: string, brandId: string): Promise<ArticleVersion[]>;
-  getVersion(versionId: string, brandId: string): Promise<ArticleVersion | null>;
+  getVersion(versionId: string, brandId: string, articleId?: string): Promise<ArticleVersion | null>;
   restoreVersion(
     articleId: string,
     brandId: string,
@@ -174,25 +174,29 @@ export class InMemoryArticleRepository implements IArticleRepository {
       .sort((a, b) => b.versionNumber - a.versionNumber);
   }
 
-  async getVersion(versionId: string, brandId: string): Promise<ArticleVersion | null> {
+  async getVersion(versionId: string, brandId: string, articleId?: string): Promise<ArticleVersion | null> {
     const v = mem.versions.get(versionId);
-    return v && v.brandId === brandId ? v : null;
+    if (!v) return null;
+    if (v.brandId !== brandId) return null;
+    // If articleId provided, verify the version belongs to that same article
+    if (articleId !== undefined && v.articleId !== articleId) return null;
+    return v;
   }
 
   async restoreVersion(
     articleId: string, brandId: string, organizationId: string,
     versionId: string, userId: string
   ): Promise<ArticleWorkingDocument> {
-    const version = await this.getVersion(versionId, brandId);
-    if (!version) throw new Error("Version not found or unauthorized");
+    // Must verify version belongs to the SAME article, not only same brand
+    const version = await this.getVersion(versionId, brandId, articleId);
+    if (!version) throw new Error("Version not found, unauthorized, or does not belong to this article");
     // Restoring creates a new autosave of the version's content
     const doc = await this.autosaveWorkingDocument(
       articleId, brandId, organizationId, version.content, userId
     );
-    // Record a restore block operation for each block (simplified: one op per restore)
     await this.recordBlockOperation({
       articleId, brandId, organizationId,
-      blockId: "00000000-0000-0000-0000-000000000000", // sentinel: whole-doc restore
+      blockId: "00000000-0000-4000-8000-000000000000",
       operationType: "restore",
       blockBefore: undefined,
       blockAfter: undefined,
@@ -223,6 +227,11 @@ export class InMemoryArticleRepository implements IArticleRepository {
     blockId: string, newBlock: ArticleBlock, userId: string,
     aiTaskCode?: string, aiModelHint?: string, aiPromptSummary?: string
   ): Promise<ArticleWorkingDocument> {
+    // Enforce: newBlock.id must equal blockId (preserve stable UUID)
+    if (newBlock.id !== blockId) {
+      throw new Error(`Block replacement id mismatch: newBlock.id '${newBlock.id}' must equal target blockId '${blockId}'`);
+    }
+
     const workingDoc = await this.getWorkingDocument(articleId, brandId);
     if (!workingDoc) throw new Error("Working document not found");
 
@@ -234,6 +243,7 @@ export class InMemoryArticleRepository implements IArticleRepository {
     const updatedBlocks = [...blocks];
     updatedBlocks[idx] = {
       ...newBlock,
+      id: blockId, // double-enforce
       provenance: {
         ...newBlock.provenance,
         lastModifiedBy: userId,
@@ -424,13 +434,14 @@ export class SupabaseArticleRepository implements IArticleRepository {
     return (data ?? []).map(mapVersionRow);
   }
 
-  async getVersion(versionId: string, brandId: string): Promise<ArticleVersion | null> {
-    const { data, error } = await this.client
+  async getVersion(versionId: string, brandId: string, articleId?: string): Promise<ArticleVersion | null> {
+    let query = this.client
       .from("article_versions")
       .select("*")
       .eq("id", versionId)
-      .eq("brand_id", brandId)
-      .maybeSingle();
+      .eq("brand_id", brandId);
+    if (articleId) query = query.eq("article_id", articleId);
+    const { data, error } = await query.maybeSingle();
     if (error) throw new Error(`[Article Repo] getVersion: ${error.message}`);
     return data ? mapVersionRow(data) : null;
   }
@@ -439,14 +450,15 @@ export class SupabaseArticleRepository implements IArticleRepository {
     articleId: string, brandId: string, organizationId: string,
     versionId: string, userId: string
   ): Promise<ArticleWorkingDocument> {
-    const version = await this.getVersion(versionId, brandId);
-    if (!version) throw new Error("Version not found or unauthorized");
+    // Must verify version belongs to the SAME article
+    const version = await this.getVersion(versionId, brandId, articleId);
+    if (!version) throw new Error("Version not found, unauthorized, or does not belong to this article");
     const doc = await this.autosaveWorkingDocument(
       articleId, brandId, organizationId, version.content, userId
     );
     await this.recordBlockOperation({
       articleId, brandId, organizationId,
-      blockId: "00000000-0000-0000-0000-000000000000",
+      blockId: "00000000-0000-4000-8000-000000000000",
       operationType: "restore",
       blockBefore: undefined,
       blockAfter: undefined,
@@ -496,6 +508,11 @@ export class SupabaseArticleRepository implements IArticleRepository {
     blockId: string, newBlock: ArticleBlock, userId: string,
     aiTaskCode?: string, aiModelHint?: string, aiPromptSummary?: string
   ): Promise<ArticleWorkingDocument> {
+    // Enforce: newBlock.id must equal blockId (preserve stable UUID)
+    if (newBlock.id !== blockId) {
+      throw new Error(`Block replacement id mismatch: newBlock.id '${newBlock.id}' must equal target blockId '${blockId}'`);
+    }
+
     const workingDoc = await this.getWorkingDocument(articleId, brandId);
     if (!workingDoc) throw new Error("Working document not found");
 
@@ -507,6 +524,7 @@ export class SupabaseArticleRepository implements IArticleRepository {
     const updatedBlocks = [...blocks];
     updatedBlocks[idx] = {
       ...newBlock,
+      id: blockId, // double-enforce
       provenance: {
         ...newBlock.provenance,
         lastModifiedBy: userId,
@@ -521,6 +539,7 @@ export class SupabaseArticleRepository implements IArticleRepository {
       ...workingDoc.content,
       document: { blocks: updatedBlocks },
     };
+
 
     const updatedDoc = await this.autosaveWorkingDocument(
       articleId, brandId, organizationId, updatedContent, userId
