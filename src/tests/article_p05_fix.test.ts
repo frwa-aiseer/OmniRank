@@ -671,6 +671,83 @@ describe("OR-P05-FINAL — DB/Repo Same-Brand Validation for Refs", () => {
       repo.createVersion(article.id, BRAND_A, ORG_A, envelope, "v1", USER_A)
     ).rejects.toThrow(/Cross-brand reference rejected/i);
   });
+
+  it("should fail closed and reject autosave when evidenceRef does not exist in DB/memory", async () => {
+    const repo = new InMemoryArticleRepository();
+    const missingClaimId = crypto.randomUUID();
+
+    const article = await repo.createArticle({
+      organizationId: ORG_A,
+      brandId: BRAND_A,
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      status: "drafting",
+      title: "Missing Ref Test",
+      slug: "missing-ref",
+      locale: "en",
+      seo: {},
+      geo: {},
+      metadata: {},
+      sources: [],
+      relationships: [],
+      createdBy: USER_A,
+    });
+
+    const block = makeBlock("statistic", {
+      content: { value: "50%", label: "Metric" },
+      evidenceRefs: [missingClaimId],
+    });
+
+    const envelope = makeEnvelope({
+      articleId: article.id,
+      brandId: BRAND_A,
+      document: { blocks: [block] },
+    });
+
+    await expect(
+      repo.autosaveWorkingDocument(article.id, BRAND_A, ORG_A, envelope, USER_A)
+    ).rejects.toThrow(/Missing, inaccessible, or foreign reference/i);
+  });
+
+  it("should recursively collect and validate evidenceRefs and sourceRefs from children", async () => {
+    const repo = new InMemoryArticleRepository();
+    const foreignClaimId = crypto.randomUUID();
+    InMemoryArticleRepository.knownEvidenceClaims.set(foreignClaimId, BRAND_B);
+
+    const article = await repo.createArticle({
+      organizationId: ORG_A,
+      brandId: BRAND_A,
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      status: "drafting",
+      title: "Recursive Test",
+      slug: "recursive",
+      locale: "en",
+      seo: {},
+      geo: {},
+      metadata: {},
+      sources: [],
+      relationships: [],
+      createdBy: USER_A,
+    });
+
+    const childBlock = makeBlock("statistic", {
+      content: { value: "50%", label: "Metric" },
+      evidenceRefs: [foreignClaimId],
+    });
+
+    const parentBlock = makeBlock("paragraph", {
+      children: [childBlock],
+    });
+
+    const envelope = makeEnvelope({
+      articleId: article.id,
+      brandId: BRAND_A,
+      document: { blocks: [parentBlock] },
+    });
+
+    await expect(
+      repo.autosaveWorkingDocument(article.id, BRAND_A, ORG_A, envelope, USER_A)
+    ).rejects.toThrow(/Cross-brand reference rejected/i);
+  });
 });
 
 // ============================================================================

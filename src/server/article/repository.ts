@@ -109,24 +109,46 @@ export class InMemoryArticleRepository implements IArticleRepository {
   static knownKnowledgeChunks = new Map<string, string>(); // chunkId -> brandId
 
   private validateBrandRefs(content: ArticleEnvelope, brandId: string): void {
-    for (const b of content.document?.blocks ?? []) {
-      if (Array.isArray(b.evidenceRefs)) {
-        for (const ref of b.evidenceRefs) {
-          const claimBrand = InMemoryArticleRepository.knownEvidenceClaims.get(ref);
-          if (claimBrand && claimBrand !== brandId) {
-            const err = assertSameBrandReference(brandId, claimBrand, "evidenceRefs");
-            if (err) throw new Error(err.message);
+    const collectRefs = (blocks: ArticleBlock[] | undefined, evRefs: string[], srcRefs: string[]) => {
+      for (const b of blocks ?? []) {
+        if (Array.isArray(b.evidenceRefs)) {
+          for (const ref of b.evidenceRefs) {
+            if (ref && isValidUuid(ref)) evRefs.push(ref);
           }
+        }
+        if (Array.isArray(b.sourceRefs)) {
+          for (const ref of b.sourceRefs) {
+            if (ref && isValidUuid(ref)) srcRefs.push(ref);
+          }
+        }
+        if (b.children && Array.isArray(b.children)) {
+          collectRefs(b.children, evRefs, srcRefs);
         }
       }
-      if (Array.isArray(b.sourceRefs)) {
-        for (const ref of b.sourceRefs) {
-          const chunkBrand = InMemoryArticleRepository.knownKnowledgeChunks.get(ref);
-          if (chunkBrand && chunkBrand !== brandId) {
-            const err = assertSameBrandReference(brandId, chunkBrand, "sourceRefs");
-            if (err) throw new Error(err.message);
-          }
-        }
+    };
+
+    const rawEvidenceRefs: string[] = [];
+    const rawSourceRefs: string[] = [];
+    collectRefs(content.document?.blocks, rawEvidenceRefs, rawSourceRefs);
+
+    const evidenceRefs = Array.from(new Set(rawEvidenceRefs));
+    const sourceRefs = Array.from(new Set(rawSourceRefs));
+
+    for (const ref of evidenceRefs) {
+      const claimBrand = InMemoryArticleRepository.knownEvidenceClaims.get(ref);
+      if (!claimBrand) throw new Error("Missing, inaccessible, or foreign reference");
+      if (claimBrand !== brandId) {
+        const err = assertSameBrandReference(brandId, claimBrand, "evidenceRefs");
+        if (err) throw new Error(err.message);
+      }
+    }
+
+    for (const ref of sourceRefs) {
+      const chunkBrand = InMemoryArticleRepository.knownKnowledgeChunks.get(ref);
+      if (!chunkBrand) throw new Error("Missing, inaccessible, or foreign reference");
+      if (chunkBrand !== brandId) {
+        const err = assertSameBrandReference(brandId, chunkBrand, "sourceRefs");
+        if (err) throw new Error(err.message);
       }
     }
   }
@@ -387,31 +409,43 @@ export class SupabaseArticleRepository implements IArticleRepository {
   }
 
   private async validateBrandRefs(content: ArticleEnvelope, brandId: string): Promise<void> {
-    const evidenceRefs: string[] = [];
-    const sourceRefs: string[] = [];
-    for (const b of content.document?.blocks ?? []) {
-      if (Array.isArray(b.evidenceRefs)) {
-        for (const ref of b.evidenceRefs) {
-          if (ref && isValidUuid(ref)) evidenceRefs.push(ref);
+    const collectRefs = (blocks: ArticleBlock[] | undefined, evRefs: string[], srcRefs: string[]) => {
+      for (const b of blocks ?? []) {
+        if (Array.isArray(b.evidenceRefs)) {
+          for (const ref of b.evidenceRefs) {
+            if (ref && isValidUuid(ref)) evRefs.push(ref);
+          }
+        }
+        if (Array.isArray(b.sourceRefs)) {
+          for (const ref of b.sourceRefs) {
+            if (ref && isValidUuid(ref)) srcRefs.push(ref);
+          }
+        }
+        if (b.children && Array.isArray(b.children)) {
+          collectRefs(b.children, evRefs, srcRefs);
         }
       }
-      if (Array.isArray(b.sourceRefs)) {
-        for (const ref of b.sourceRefs) {
-          if (ref && isValidUuid(ref)) sourceRefs.push(ref);
-        }
-      }
-    }
+    };
+
+    const rawEvidenceRefs: string[] = [];
+    const rawSourceRefs: string[] = [];
+    collectRefs(content.document?.blocks, rawEvidenceRefs, rawSourceRefs);
+
+    const evidenceRefs = Array.from(new Set(rawEvidenceRefs));
+    const sourceRefs = Array.from(new Set(rawSourceRefs));
 
     if (evidenceRefs.length > 0) {
       const { data: claims, error } = await this.client
         .from("evidence_claims")
         .select("id, brand_id")
         .in("id", evidenceRefs);
-      if (!error && claims) {
-        for (const claim of claims) {
-          const err = assertSameBrandReference(brandId, claim.brand_id, "evidenceRefs");
-          if (err) throw new Error(err.message);
-        }
+      if (error) throw new Error(`DB query error: ${error.message}`);
+      if (!claims || claims.length !== evidenceRefs.length) {
+        throw new Error("Missing, inaccessible, or foreign reference");
+      }
+      for (const claim of claims) {
+        const err = assertSameBrandReference(brandId, claim.brand_id, "evidenceRefs");
+        if (err) throw new Error(err.message);
       }
     }
 
@@ -420,11 +454,13 @@ export class SupabaseArticleRepository implements IArticleRepository {
         .from("knowledge_chunks")
         .select("id, brand_id")
         .in("id", sourceRefs);
-      if (!error && chunks) {
-        for (const chunk of chunks) {
-          const err = assertSameBrandReference(brandId, chunk.brand_id, "sourceRefs");
-          if (err) throw new Error(err.message);
-        }
+      if (error) throw new Error(`DB query error: ${error.message}`);
+      if (!chunks || chunks.length !== sourceRefs.length) {
+        throw new Error("Missing, inaccessible, or foreign reference");
+      }
+      for (const chunk of chunks) {
+        const err = assertSameBrandReference(brandId, chunk.brand_id, "sourceRefs");
+        if (err) throw new Error(err.message);
       }
     }
   }

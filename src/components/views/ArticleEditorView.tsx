@@ -250,9 +250,6 @@ function bnBlockToOmniBlock(
 
   // For statistic and citation, ensure at least one valid evidence reference exists
   let evidenceRefs = existing?.evidenceRefs ?? [];
-  if ((resolvedType === "statistic" || resolvedType === "citation") && evidenceRefs.length === 0) {
-    evidenceRefs = [crypto.randomUUID()];
-  }
 
   return {
     id: bn.id,

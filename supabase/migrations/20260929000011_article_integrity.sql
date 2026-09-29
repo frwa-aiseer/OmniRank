@@ -226,16 +226,16 @@ BEGIN
     OR NEW.approved_by IS NOT NULL
     OR NEW.approved_version_id IS NOT NULL
   ) THEN
-    -- Allow: strategist brand role
-    IF caller_brand_role = 'strategist' THEN
+    -- Allow: strategist or reviewer brand role
+    IF caller_brand_role IN ('strategist', 'reviewer') THEN
       RETURN NEW;
     END IF;
     -- Allow: org owner or admin
     IF caller_org_role IN ('owner', 'admin') THEN
       RETURN NEW;
     END IF;
-    -- Deny: writer, reviewer, viewer
-    RAISE EXCEPTION 'Only a strategist or org admin may approve articles. Current brand role: %',
+    -- Deny: writer, viewer
+    RAISE EXCEPTION 'Only a strategist, reviewer, or org admin may approve articles. Current brand role: %',
       COALESCE(caller_brand_role, 'none');
   END IF;
 
