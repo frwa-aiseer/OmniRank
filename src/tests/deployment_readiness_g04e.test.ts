@@ -560,7 +560,7 @@ describe("OR-G04E — Final Supabase Deployment Readiness Gate", () => {
       const result = verifyMigrations();
 
       expect(result.success).toBe(true);
-      expect(result.migrationCount).toBe(8);
+      expect(result.migrationCount).toBe(9);
       expect(result.tableCount).toBe(21);
     });
   });

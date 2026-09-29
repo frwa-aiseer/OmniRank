@@ -14,6 +14,7 @@ const expectedMigrations = [
   "20260918000006_canonical_hardened_rls.sql",
   "20260929000007_live_foundation_closure.sql",
   "20260929000008_predeployment_integrity.sql",
+  "20260929000009_postdeployment_sync.sql",
 ];
 
 const requiredTables = [
