@@ -257,7 +257,21 @@ describe("OR-G04F — Final Pre-Deployment Database Integrity Gate", () => {
 
     it("should use user-scoped client when accessToken is provided", async () => {
       vi.spyOn(supabaseClientModule, "isLiveSupabaseConfigured").mockReturnValue(true);
-      const scopedSpy = vi.spyOn(supabaseClientModule, "createScopedUserSupabaseClient");
+
+      // Stub client whose query chains resolve immediately without hitting the network
+      const mockChain: any = {
+        select: vi.fn(() => mockChain),
+        eq: vi.fn(() => mockChain),
+        order: vi.fn(() => mockChain),
+        limit: vi.fn(() => mockChain),
+        maybeSingle: vi.fn(() => Promise.resolve({ data: null, error: null })),
+        then: (resolve: any, reject?: any) =>
+          Promise.resolve({ data: [], error: null }).then(resolve, reject),
+      };
+      const mockClient: any = { from: vi.fn(() => mockChain) };
+
+      const scopedSpy = vi.spyOn(supabaseClientModule, "createScopedUserSupabaseClient")
+        .mockReturnValue(mockClient);
 
       const repo = new SupabaseBrandBrainCoreRepository();
       try {
