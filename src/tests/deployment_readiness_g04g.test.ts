@@ -119,11 +119,11 @@ describe("OR-G04G — Post-Deployment Sync Gate", () => {
   });
 
   describe("6. Migration chain integrity", () => {
-    it("should have 10 sequential migration files", () => {
+    it("should have 11 sequential migration files", () => {
       const files = fs.readdirSync(MIG_DIR).filter((f: string) => f.endsWith(".sql")).sort();
-      expect(files.length).toBe(10);
+      expect(files.length).toBe(11);
       expect(files[6]).toBe("20260919000001_role_helper_bootstrap.sql");
-      expect(files[9]).toBe("20260929000009_postdeployment_sync.sql");
+      expect(files[10]).toBe("20260929000010_articles_schema.sql");
     });
 
     it("should explicitly verify sorted migration order places role-helper creation before 00008's GRANT statements", () => {

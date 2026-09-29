@@ -16,6 +16,7 @@ const expectedMigrations = [
   "20260929000007_live_foundation_closure.sql",
   "20260929000008_predeployment_integrity.sql",
   "20260929000009_postdeployment_sync.sql",
+  "20260929000010_articles_schema.sql",
 ];
 
 const requiredTables = [
@@ -40,6 +41,10 @@ const requiredTables = [
   "evidence_sources",
   "evidence_claims",
   "evidence_claim_sources",
+  "articles",
+  "article_working_documents",
+  "article_versions",
+  "content_block_operations",
 ];
 
 export function verifyMigrations() {

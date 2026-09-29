@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { getServerEnv } from "./src/server/env.ts";
 import { tenancyRouter } from "./src/server/routes/tenancy.ts";
 import brandBrainRouter from "./src/server/routes/brand-brain.ts";
+import articleRouter from "./src/server/routes/article.ts";
 
 async function startServer() {
   const app = express();
@@ -17,6 +18,9 @@ async function startServer() {
 
   // Brand Brain Core API
   app.use("/api/brand-brain", brandBrainRouter);
+
+  // Article API (OR-P05)
+  app.use("/api/articles", articleRouter);
 
   // Health and Diagnostic API route
   app.get("/api/health", (req, res) => {
