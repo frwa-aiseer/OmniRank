@@ -34,6 +34,7 @@ export interface IArticleRepository {
   getArticle(articleId: string, brandId: string): Promise<Article | null>;
   listArticles(brandId: string): Promise<Article[]>;
   updateArticleStatus(articleId: string, brandId: string, status: Article["status"]): Promise<Article>;
+  reviewArticle(articleId: string, versionId: string | null, status: Article["status"]): Promise<void>;
 
   // Working document (autosave)
   autosaveWorkingDocument(
@@ -175,6 +176,15 @@ export class InMemoryArticleRepository implements IArticleRepository {
     a.status = status;
     a.updatedAt = new Date().toISOString();
     return a;
+  }
+
+  async reviewArticle(articleId: string, versionId: string | null, status: Article["status"]): Promise<void> {
+    const a = mem.articles.get(articleId);
+    if (!a) throw new Error("Article not found");
+    // Simplified mock behavior for testing
+    a.status = status;
+    a.approvedVersionId = status === "approved" ? (versionId ?? undefined) : undefined;
+    a.updatedAt = new Date().toISOString();
   }
 
   async autosaveWorkingDocument(
@@ -406,6 +416,15 @@ export class SupabaseArticleRepository implements IArticleRepository {
       .single();
     if (error) throw new Error(`[Article Repo] updateArticleStatus: ${error.message}`);
     return mapArticleRow(data);
+  }
+
+  async reviewArticle(articleId: string, versionId: string | null, status: Article["status"]): Promise<void> {
+    const { error } = await this.client.rpc("review_article", {
+      p_article_id: articleId,
+      p_version_id: versionId,
+      p_status: status,
+    });
+    if (error) throw new Error(`[Article Repo] reviewArticle: ${error.message}`);
   }
 
   private async validateBrandRefs(content: ArticleEnvelope, brandId: string): Promise<void> {

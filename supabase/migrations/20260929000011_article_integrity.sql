@@ -301,3 +301,78 @@ REVOKE ALL ON FUNCTION public.fn_check_block_op_consistency() FROM PUBLIC, anon,
 REVOKE ALL ON FUNCTION public.fn_check_approved_version() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.fn_prevent_writer_approval() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.fn_assign_version_number() FROM PUBLIC, anon, authenticated;
+
+-- ============================================================================
+-- 8. NARROW REVIEW MECHANISM
+-- Allows reviewers to approve/reject without gaining general UPDATE permission.
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.review_article(
+  p_article_id UUID,
+  p_version_id UUID,
+  p_status TEXT
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_brand_id UUID;
+  v_org_id UUID;
+  caller_brand_role TEXT;
+  caller_org_role TEXT;
+BEGIN
+  -- 1. Get article
+  SELECT brand_id, organization_id INTO v_brand_id, v_org_id
+  FROM public.articles
+  WHERE id = p_article_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Article not found';
+  END IF;
+
+  -- 2. Verify auth
+  SELECT role INTO caller_brand_role
+  FROM public.brand_members
+  WHERE brand_id = v_brand_id AND user_id = auth.uid();
+
+  SELECT role INTO caller_org_role
+  FROM public.organization_members
+  WHERE organization_id = v_org_id AND user_id = auth.uid();
+
+  IF NOT (
+    caller_brand_role IN ('strategist', 'reviewer')
+    OR caller_org_role IN ('owner', 'admin')
+  ) THEN
+    RAISE EXCEPTION 'Unauthorized: only strategist, reviewer, or org admin can review articles';
+  END IF;
+
+  -- 3. Verify version (if approved)
+  IF p_status = 'approved' AND p_version_id IS NOT NULL THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM public.article_versions
+      WHERE id = p_version_id AND article_id = p_article_id
+    ) THEN
+      RAISE EXCEPTION 'Version does not belong to this article';
+    END IF;
+  END IF;
+
+  -- 4. Enforce status values
+  IF p_status NOT IN ('idea','researching','brief','drafting','ai_review','human_review','approved','scheduled','published','monitoring','refresh_recommended','archived') THEN
+    RAISE EXCEPTION 'Invalid status';
+  END IF;
+
+  -- 5. Update article (only review fields)
+  UPDATE public.articles
+  SET 
+    status = p_status,
+    approved_version_id = CASE WHEN p_status = 'approved' THEN p_version_id ELSE NULL END,
+    approved_by = CASE WHEN p_status = 'approved' THEN auth.uid() ELSE NULL END,
+    updated_at = NOW()
+  WHERE id = p_article_id;
+
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.review_article(UUID, UUID, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.review_article(UUID, UUID, TEXT) TO authenticated, service_role;
