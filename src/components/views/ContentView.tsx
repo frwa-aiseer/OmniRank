@@ -1,44 +1,65 @@
 /**
- * OR-P05-FIX — Content View (Article List + Editor Integration)
+ * OR-P05-FINAL — Content View (Article List + Editor Integration)
  *
- * Live mode: uses /api/articles backend (Supabase-scoped RLS).
- * Demo mode: uses in-memory article repository.
- *
- * When an article is opened, renders ArticleEditorView in-place.
- * ArticleDocument state (from AppContext) is left for demo/legacy list display;
- * actual article content is managed by the article API / InMemoryArticleRepository.
+ * Live mode: uses authenticated /api/articles endpoints with Supabase session bearer token.
+ * Demo mode: uses in-memory behavior explicitly in client state.
+ * Never imports or executes server ArticleRepository in the browser.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
-  FileText, Plus, CheckCircle, Clock, Eye, Trash2, X, AlertCircle, ArrowLeft
+  FileText,
+  Plus,
+  CheckCircle,
+  Clock,
+  Eye,
+  Trash2,
+  X,
+  AlertCircle,
+  ArrowLeft,
 } from "lucide-react";
 import { useApp } from "../../context/AppContext.tsx";
+import { supabase } from "../../lib/supabase/client.ts";
 import { ArticleEditorView } from "./ArticleEditorView.tsx";
-import { getArticleRepository } from "../../server/article/repository.ts";
-import { ArticleEnvelope, ArticleVersion, ARTICLE_SCHEMA_VERSION, Article, ArticleStatus } from "../../types/article.ts";
+import {
+  ArticleEnvelope,
+  ArticleVersion,
+  ARTICLE_SCHEMA_VERSION,
+  Article,
+  ArticleStatus,
+} from "../../types/article.ts";
 
 // ============================================================================
-// Helper — derive repo access token from AppContext
+// Demo In-Memory Store (client-only, used only when isLiveSupabase === false)
 // ============================================================================
-function useArticleRepo() {
-  const { currentUser } = useApp();
-  // In live mode the access token would come from Supabase session.
-  // Here we pass undefined so demo InMemoryRepo is used (isLiveSupabaseConfigured() = false in dev).
-  return getArticleRepository(undefined);
+
+const demoArticlesStore = new Map<string, Article[]>(); // brandId -> articles
+const demoWorkingDocsStore = new Map<string, ArticleEnvelope>(); // articleId -> workingDoc
+const demoVersionsStore = new Map<string, ArticleVersion[]>(); // articleId -> versions
+
+// ============================================================================
+// Live API Client
+// ============================================================================
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 // ============================================================================
 // ContentView
 // ============================================================================
+
 export function ContentView() {
-  const { currentBrand, currentUser } = useApp();
-  const repo = useArticleRepo();
+  const { currentBrand, currentUser, isLiveSupabase } = useApp();
 
   // ---- List state ----
   const [articles, setArticles] = useState<Article[]>([]);
   const [loadingList, setLoadingList] = useState(false);
-  const [listLoaded, setListLoaded] = useState(false);
 
   // ---- Create state ----
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -53,44 +74,57 @@ export function ContentView() {
   const [editorLoading, setEditorLoading] = useState(false);
 
   const brandId = currentBrand?.id ?? "";
-  // Derive orgId from current brand; fallback to a stable demo UUID
-  const orgId = (currentBrand as unknown as Record<string, string>)?.organizationId
-    ?? "11111111-1111-4000-8000-111111111111";
-  const userId = (currentUser as unknown as Record<string, string>)?.id
-    ?? "00000000-0000-4000-8000-000000000001";
+  const orgId =
+    (currentBrand as unknown as Record<string, string>)?.organizationId ??
+    "11111111-1111-4000-8000-111111111111";
+  const userId =
+    (currentUser as unknown as Record<string, string>)?.id ??
+    "00000000-0000-4000-8000-000000000001";
 
-  // Load articles when brand changes
-  const loadArticles = useCallback(async () => {
-    if (!brandId) return;
-    setLoadingList(true);
-    try {
-      const list = await repo.listArticles(brandId);
-      setArticles(list);
-      setListLoaded(true);
-    } finally {
-      setLoadingList(false);
+  // ---- API Operations (Live vs Demo) ----
+
+  const apiListArticles = useCallback(async (bId: string): Promise<Article[]> => {
+    if (!bId) return [];
+    if (isLiveSupabase) {
+      const res = await fetch(`/api/articles/${bId}`, { headers: await getAuthHeaders() });
+      if (!res.ok) throw new Error(`Failed to list articles (${res.status})`);
+      const data = await res.json();
+      return data.articles ?? [];
     }
-  }, [brandId, repo]);
+    return demoArticlesStore.get(bId) ?? [];
+  }, [isLiveSupabase]);
 
-  // Trigger load on first render if brand is available
-  if (brandId && !listLoaded && !loadingList) {
-    loadArticles();
-  }
+  const apiCreateArticle = useCallback(
+    async (params: { title: string; slug: string }): Promise<Article> => {
+      if (isLiveSupabase) {
+        const res = await fetch(`/api/articles/${brandId}`, {
+          method: "POST",
+          headers: await getAuthHeaders(),
+          body: JSON.stringify({
+            organizationId: orgId,
+            title: params.title,
+            slug: params.slug,
+            locale: "en",
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Failed to create article (${res.status})`);
+        }
+        const data = await res.json();
+        return data.article;
+      }
 
-  // ---- Create article ----
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTitle.trim()) { setFormError("Title is required."); return; }
-    if (!brandId || !orgId) { setFormError("No brand/org selected."); return; }
-
-    try {
-      const article = await repo.createArticle({
+      // Demo mode
+      const now = new Date().toISOString();
+      const newArt: Article = {
+        id: crypto.randomUUID(),
         organizationId: orgId,
         brandId,
         schemaVersion: ARTICLE_SCHEMA_VERSION,
         status: "drafting" as ArticleStatus,
-        title: newTitle.trim(),
-        slug: newSlug.trim() || newTitle.trim().toLowerCase().replace(/\s+/g, "-"),
+        title: params.title,
+        slug: params.slug,
         locale: "en",
         seo: {},
         geo: {},
@@ -98,62 +132,219 @@ export function ContentView() {
         sources: [],
         relationships: [],
         createdBy: userId,
-      });
+        createdAt: now,
+        updatedAt: now,
+      };
+      const currentList = demoArticlesStore.get(brandId) ?? [];
+      demoArticlesStore.set(brandId, [newArt, ...currentList]);
+      return newArt;
+    },
+    [isLiveSupabase, brandId, orgId, userId]
+  );
+
+  const apiGetWorkingDocument = useCallback(
+    async (artId: string, bId: string): Promise<ArticleEnvelope | null> => {
+      if (isLiveSupabase) {
+        const res = await fetch(`/api/articles/${bId}/${artId}/working-document`, {
+          headers: await getAuthHeaders(),
+        });
+        if (res.status === 404) return null;
+        if (!res.ok) throw new Error(`Failed to fetch working document (${res.status})`);
+        const data = await res.json();
+        return data.workingDocument?.content ?? null;
+      }
+      return demoWorkingDocsStore.get(artId) ?? null;
+    },
+    [isLiveSupabase]
+  );
+
+  const apiAutosave = useCallback(
+    async (content: ArticleEnvelope): Promise<void> => {
+      if (!editingArticle) return;
+      if (isLiveSupabase) {
+        const res = await fetch(
+          `/api/articles/${editingArticle.brandId}/${editingArticle.id}/autosave`,
+          {
+            method: "PUT",
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({ content, organizationId: editingArticle.organizationId }),
+          }
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Autosave failed (${res.status})`);
+        }
+        return;
+      }
+      demoWorkingDocsStore.set(editingArticle.id, content);
+    },
+    [isLiveSupabase, editingArticle]
+  );
+
+  const apiCreateVersion = useCallback(
+    async (content: ArticleEnvelope, label: string): Promise<ArticleVersion> => {
+      if (!editingArticle) throw new Error("No article open");
+      if (isLiveSupabase) {
+        const res = await fetch(
+          `/api/articles/${editingArticle.brandId}/${editingArticle.id}/versions`,
+          {
+            method: "POST",
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({
+              content,
+              label,
+              organizationId: editingArticle.organizationId,
+            }),
+          }
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Version creation failed (${res.status})`);
+        }
+        const data = await res.json();
+        return data.version;
+      }
+
+      // Demo mode
+      const currentVers = demoVersionsStore.get(editingArticle.id) ?? [];
+      const newVer: ArticleVersion = {
+        id: crypto.randomUUID(),
+        articleId: editingArticle.id,
+        brandId: editingArticle.brandId,
+        organizationId: editingArticle.organizationId,
+        versionNumber: currentVers.length + 1,
+        label,
+        content,
+        schemaVersion: content.schemaVersion,
+        createdBy: userId,
+        createdAt: new Date().toISOString(),
+      };
+      demoVersionsStore.set(editingArticle.id, [newVer, ...currentVers]);
+      return newVer;
+    },
+    [isLiveSupabase, editingArticle, userId]
+  );
+
+  const apiListVersions = useCallback(
+    async (artId: string, bId: string): Promise<ArticleVersion[]> => {
+      if (isLiveSupabase) {
+        const res = await fetch(`/api/articles/${bId}/${artId}/versions`, {
+          headers: await getAuthHeaders(),
+        });
+        if (!res.ok) return [];
+        const data = await res.json();
+        return data.versions ?? [];
+      }
+      return demoVersionsStore.get(artId) ?? [];
+    },
+    [isLiveSupabase]
+  );
+
+  const apiRestoreVersion = useCallback(
+    async (versionId: string): Promise<ArticleEnvelope> => {
+      if (!editingArticle) throw new Error("No article open");
+      if (isLiveSupabase) {
+        const res = await fetch(
+          `/api/articles/${editingArticle.brandId}/${editingArticle.id}/versions/${versionId}/restore`,
+          {
+            method: "POST",
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({ organizationId: editingArticle.organizationId }),
+          }
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Failed to restore version (${res.status})`);
+        }
+        const data = await res.json();
+        const restoredEnvelope = data.workingDocument?.content as ArticleEnvelope;
+        setEditingWorkingDoc(restoredEnvelope);
+        return restoredEnvelope;
+      }
+
+      // Demo mode
+      const versions = demoVersionsStore.get(editingArticle.id) ?? [];
+      const ver = versions.find((v) => v.id === versionId);
+      if (!ver) throw new Error("Version not found in demo store");
+      demoWorkingDocsStore.set(editingArticle.id, ver.content);
+      setEditingWorkingDoc(ver.content);
+      return ver.content;
+    },
+    [isLiveSupabase, editingArticle]
+  );
+
+  // ---- Load articles list ----
+  const loadArticles = useCallback(async () => {
+    if (!brandId) return;
+    setLoadingList(true);
+    try {
+      const list = await apiListArticles(brandId);
+      setArticles(list);
+    } catch {
+      // non-fatal
+    } finally {
+      setLoadingList(false);
+    }
+  }, [brandId, apiListArticles]);
+
+  useEffect(() => {
+    loadArticles();
+  }, [loadArticles]);
+
+  // ---- Open editor ----
+  const openEditor = useCallback(
+    async (article: Article) => {
+      setEditorLoading(true);
+      setEditingArticle(article);
+      try {
+        const workingDoc = await apiGetWorkingDocument(article.id, article.brandId);
+        setEditingWorkingDoc(workingDoc ?? undefined);
+        const versionList = await apiListVersions(article.id, article.brandId);
+        setEditingVersions(versionList);
+      } finally {
+        setEditorLoading(false);
+      }
+    },
+    [apiGetWorkingDocument, apiListVersions]
+  );
+
+  // ---- Create article form handler ----
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTitle.trim()) {
+      setFormError("Title is required.");
+      return;
+    }
+    if (!brandId || !orgId) {
+      setFormError("No brand/org selected.");
+      return;
+    }
+
+    try {
+      const slug = newSlug.trim() || newTitle.trim().toLowerCase().replace(/\s+/g, "-");
+      const article = await apiCreateArticle({ title: newTitle.trim(), slug });
       setArticles((prev) => [article, ...prev]);
-      setNewTitle(""); setNewSlug(""); setFormError("");
+      setNewTitle("");
+      setNewSlug("");
+      setFormError("");
       setIsCreateModalOpen(false);
-      // Open editor immediately
       openEditor(article);
     } catch (err: unknown) {
       setFormError((err as Error).message || "Failed to create article");
     }
   };
 
-  // ---- Open editor ----
-  const openEditor = useCallback(async (article: Article) => {
-    setEditorLoading(true);
-    setEditingArticle(article);
-    try {
-      const workingDoc = await repo.getWorkingDocument(article.id, article.brandId);
-      setEditingWorkingDoc(workingDoc?.content);
-      const versionList = await repo.listVersions(article.id, article.brandId);
-      setEditingVersions(versionList);
-    } finally {
-      setEditorLoading(false);
-    }
-  }, [repo]);
+  // ---- Save version handler for editor ----
+  const handleSaveVersion = useCallback(
+    async (content: ArticleEnvelope, label: string): Promise<ArticleVersion> => {
+      const ver = await apiCreateVersion(content, label);
+      setEditingVersions((prev) => [ver, ...prev]);
+      return ver;
+    },
+    [apiCreateVersion]
+  );
 
-  // ---- Autosave ----
-  const handleAutosave = useCallback(async (content: ArticleEnvelope) => {
-    if (!editingArticle) return;
-    await repo.autosaveWorkingDocument(
-      editingArticle.id, editingArticle.brandId, editingArticle.organizationId,
-      content, userId
-    );
-  }, [editingArticle, repo, userId]);
-
-  // ---- Save version ----
-  const handleSaveVersion = useCallback(async (content: ArticleEnvelope, label: string): Promise<ArticleVersion> => {
-    if (!editingArticle) throw new Error("No article open");
-    const version = await repo.createVersion(
-      editingArticle.id, editingArticle.brandId, editingArticle.organizationId,
-      content, label, userId
-    );
-    setEditingVersions((prev) => [version, ...prev]);
-    return version;
-  }, [editingArticle, repo, userId]);
-
-  // ---- Restore version ----
-  const handleRestoreVersion = useCallback(async (versionId: string) => {
-    if (!editingArticle) return;
-    const restored = await repo.restoreVersion(
-      editingArticle.id, editingArticle.brandId, editingArticle.organizationId,
-      versionId, userId
-    );
-    setEditingWorkingDoc(restored.content);
-  }, [editingArticle, repo, userId]);
-
-  // ---- Delete ----
+  // ---- Delete article handler ----
   const handleDelete = async (articleId: string) => {
     if (!confirm("Delete this article?")) return;
     setArticles((prev) => prev.filter((a) => a.id !== articleId));
@@ -169,7 +360,10 @@ export function ContentView() {
         {/* Editor header */}
         <div className="flex items-center gap-3 px-4 py-2 border-b border-neutral-200 bg-white shrink-0">
           <button
-            onClick={() => { setEditingArticle(null); loadArticles(); }}
+            onClick={() => {
+              setEditingArticle(null);
+              loadArticles();
+            }}
             className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-900 cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
@@ -177,13 +371,15 @@ export function ContentView() {
           </button>
           <span className="text-neutral-300">|</span>
           <span className="text-xs text-neutral-500 truncate">{editingArticle.title}</span>
-          <span className={`ml-auto text-[10px] font-medium px-2 py-0.5 rounded border ${
-            editingArticle.status === "drafting"
-              ? "bg-amber-50 text-amber-700 border-amber-200"
-              : editingArticle.status === "approved"
-              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-              : "bg-blue-50 text-blue-700 border-blue-200"
-          }`}>
+          <span
+            className={`ml-auto text-[10px] font-medium px-2 py-0.5 rounded border ${
+              editingArticle.status === "drafting"
+                ? "bg-amber-50 text-amber-700 border-amber-200"
+                : editingArticle.status === "approved"
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : "bg-blue-50 text-blue-700 border-blue-200"
+            }`}
+          >
             {editingArticle.status.toUpperCase()}
           </span>
         </div>
@@ -201,9 +397,9 @@ export function ContentView() {
               userId={userId}
               initialContent={editingWorkingDoc}
               initialVersions={editingVersions}
-              onAutosave={handleAutosave}
+              onAutosave={apiAutosave}
               onSaveVersion={handleSaveVersion}
-              onRestoreVersion={handleRestoreVersion}
+              onRestoreVersion={apiRestoreVersion}
             />
           </div>
         )}
@@ -229,7 +425,10 @@ export function ContentView() {
           </p>
         </div>
         <button
-          onClick={() => { setFormError(""); setIsCreateModalOpen(true); }}
+          onClick={() => {
+            setFormError("");
+            setIsCreateModalOpen(true);
+          }}
           className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-neutral-900 text-white text-xs font-medium hover:bg-neutral-800 transition-colors cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -249,11 +448,16 @@ export function ContentView() {
             <h2 className="text-base font-semibold text-neutral-900">No articles yet</h2>
             <p className="text-xs text-neutral-500">
               Create your first structured article for{" "}
-              <span className="font-medium text-neutral-700">{currentBrand?.name || "your brand"}</span>.
+              <span className="font-medium text-neutral-700">
+                {currentBrand?.name || "your brand"}
+              </span>.
             </p>
           </div>
           <button
-            onClick={() => { setFormError(""); setIsCreateModalOpen(true); }}
+            onClick={() => {
+              setFormError("");
+              setIsCreateModalOpen(true);
+            }}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 transition cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -263,21 +467,27 @@ export function ContentView() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {articles.map((article) => {
-            const isDraft = article.status === "drafting" || article.status === "brief" || article.status === "researching";
-            const isApproved = article.status === "approved" || article.status === "published";
+            const isDraft =
+              article.status === "drafting" ||
+              article.status === "brief" ||
+              article.status === "researching";
+            const isApproved =
+              article.status === "approved" || article.status === "published";
             return (
               <div
                 key={article.id}
                 className="p-5 rounded-xl bg-white border border-neutral-200 shadow-xs space-y-3 hover:border-neutral-300 transition-colors"
               >
                 <div className="flex items-center justify-between">
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${
-                    isDraft
-                      ? "bg-amber-50 text-amber-700 border-amber-200"
-                      : isApproved
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                      : "bg-blue-50 text-blue-700 border-blue-200"
-                  }`}>
+                  <span
+                    className={`text-xs font-medium px-2 py-0.5 rounded border flex items-center gap-1 ${
+                      isDraft
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : isApproved
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : "bg-blue-50 text-blue-700 border-blue-200"
+                    }`}
+                  >
                     {isDraft && <Clock className="w-3 h-3" />}
                     {isApproved && <CheckCircle className="w-3 h-3" />}
                     {!isDraft && !isApproved && <Eye className="w-3 h-3" />}
@@ -322,7 +532,10 @@ export function ContentView() {
                 <FileText className="w-5 h-5 text-indigo-600" />
                 <h3 className="font-bold text-neutral-900 text-base">New Article</h3>
               </div>
-              <button onClick={() => setIsCreateModalOpen(false)} className="text-neutral-400 hover:text-neutral-600 cursor-pointer">
+              <button
+                onClick={() => setIsCreateModalOpen(false)}
+                className="text-neutral-400 hover:text-neutral-600 cursor-pointer"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -342,7 +555,8 @@ export function ContentView() {
                   value={newTitle}
                   onChange={(e) => {
                     setNewTitle(e.target.value);
-                    if (!newSlug) setNewSlug(e.target.value.toLowerCase().replace(/\s+/g, "-"));
+                    if (!newSlug)
+                      setNewSlug(e.target.value.toLowerCase().replace(/\s+/g, "-"));
                   }}
                   placeholder="Article title"
                   className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"

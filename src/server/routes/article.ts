@@ -135,7 +135,11 @@ router.put("/:brandId/:articleId/autosave", async (req: Request, res: Response) 
     );
     res.json({ workingDocument: doc });
   } catch (err: unknown) {
-    res.status(500).json({ error: (err as Error).message });
+    const msg = (err as Error).message;
+    if (msg.includes("Cross-brand reference rejected")) {
+      return void res.status(422).json({ error: msg });
+    }
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -182,7 +186,11 @@ router.post("/:brandId/:articleId/versions", async (req: Request, res: Response)
     );
     res.status(201).json({ version });
   } catch (err: unknown) {
-    res.status(500).json({ error: (err as Error).message });
+    const msg = (err as Error).message;
+    if (msg.includes("Cross-brand reference rejected")) {
+      return void res.status(422).json({ error: msg });
+    }
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -258,7 +266,11 @@ router.put("/:brandId/:articleId/blocks/:blockId", async (req: Request, res: Res
     );
     res.json({ workingDocument: updatedDoc });
   } catch (err: unknown) {
-    res.status(500).json({ error: (err as Error).message });
+    const msg = (err as Error).message;
+    if (msg.includes("Cross-brand reference rejected")) {
+      return void res.status(422).json({ error: msg });
+    }
+    res.status(500).json({ error: msg });
   }
 });
 

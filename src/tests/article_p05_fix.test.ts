@@ -14,7 +14,7 @@
  * 10.  Migration 00011 file exists and references correct objects
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -483,3 +483,291 @@ describe("OR-P05-FIX — Migration 00011 Integrity", () => {
     expect(files[11]).toBe("20260929000011_article_integrity.sql");
   });
 });
+
+// ============================================================================
+// 11. OR-P05-FINAL — SupabaseArticleRepository Version Numbering Verification
+// ============================================================================
+describe("OR-P05-FINAL — Version Numbering Advisory Lock Trigger", () => {
+  it("SupabaseArticleRepository.createVersion must not provide a calculated positive version_number to insert()", async () => {
+    const { SupabaseArticleRepository } = await import("../server/article/repository.ts");
+
+    let capturedInsertPayload: Record<string, unknown> | null = null;
+
+    const mockSingle = vi.fn().mockResolvedValue({
+      data: {
+        id: crypto.randomUUID(),
+        article_id: ART_A,
+        organization_id: ORG_A,
+        brand_id: BRAND_A,
+        version_number: 1, // DB trigger assigned
+        label: "v1",
+        content: makeEnvelope(),
+        schema_version: ARTICLE_SCHEMA_VERSION,
+        created_by: USER_A,
+        created_at: new Date().toISOString(),
+      },
+      error: null,
+    });
+
+    const mockSelect = vi.fn().mockReturnValue({ single: mockSingle });
+    const mockInsert = vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+      capturedInsertPayload = payload;
+      return { select: mockSelect };
+    });
+
+    const mockFrom = vi.fn().mockImplementation((table: string) => {
+      if (table === "article_versions") {
+        return {
+          insert: mockInsert,
+        };
+      }
+      if (table === "evidence_claims" || table === "knowledge_chunks") {
+        return {
+          select: vi.fn().mockReturnValue({
+            in: vi.fn().mockResolvedValue({ data: [], error: null }),
+          }),
+        };
+      }
+      return {};
+    });
+
+    const mockClient = { from: mockFrom } as any;
+    const repo = new SupabaseArticleRepository("test-token", mockClient);
+
+    const version = await repo.createVersion(
+      ART_A,
+      BRAND_A,
+      ORG_A,
+      makeEnvelope({ articleId: ART_A, brandId: BRAND_A }),
+      "Trigger Test",
+      USER_A
+    );
+
+    // Verify insert was called
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(capturedInsertPayload).not.toBeNull();
+    // Must NOT provide a calculated positive version_number
+    expect((capturedInsertPayload as any).version_number).toBeUndefined();
+    // DB returns the assigned version
+    expect(version.versionNumber).toBe(1);
+  });
+});
+
+// ============================================================================
+// 12. OR-P05-FINAL — Repository Same-Brand Validation for Evidence/Source Refs
+// ============================================================================
+describe("OR-P05-FINAL — DB/Repo Same-Brand Validation for Refs", () => {
+  beforeEach(() => {
+    InMemoryArticleRepository.knownEvidenceClaims.clear();
+    InMemoryArticleRepository.knownKnowledgeChunks.clear();
+  });
+
+  it("should reject autosave when evidenceRef belongs to a different brand", async () => {
+    const repo = new InMemoryArticleRepository();
+    const foreignClaimId = crypto.randomUUID();
+    InMemoryArticleRepository.knownEvidenceClaims.set(foreignClaimId, BRAND_B);
+
+    const article = await repo.createArticle({
+      organizationId: ORG_A,
+      brandId: BRAND_A,
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      status: "drafting",
+      title: "Cross Brand Ref Test",
+      slug: "cross-brand-ref",
+      locale: "en",
+      seo: {},
+      geo: {},
+      metadata: {},
+      sources: [],
+      relationships: [],
+      createdBy: USER_A,
+    });
+
+    const block = makeBlock("statistic", {
+      content: { value: "50%", label: "Metric" },
+      evidenceRefs: [foreignClaimId],
+    });
+
+    const envelope = makeEnvelope({
+      articleId: article.id,
+      brandId: BRAND_A,
+      document: { blocks: [block] },
+    });
+
+    await expect(
+      repo.autosaveWorkingDocument(article.id, BRAND_A, ORG_A, envelope, USER_A)
+    ).rejects.toThrow(/Cross-brand reference rejected/i);
+  });
+
+  it("should accept autosave when evidenceRef belongs to the same brand", async () => {
+    const repo = new InMemoryArticleRepository();
+    const sameBrandClaimId = crypto.randomUUID();
+    InMemoryArticleRepository.knownEvidenceClaims.set(sameBrandClaimId, BRAND_A);
+
+    const article = await repo.createArticle({
+      organizationId: ORG_A,
+      brandId: BRAND_A,
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      status: "drafting",
+      title: "Same Brand Ref Test",
+      slug: "same-brand-ref",
+      locale: "en",
+      seo: {},
+      geo: {},
+      metadata: {},
+      sources: [],
+      relationships: [],
+      createdBy: USER_A,
+    });
+
+    const block = makeBlock("statistic", {
+      content: { value: "50%", label: "Metric" },
+      evidenceRefs: [sameBrandClaimId],
+    });
+
+    const envelope = makeEnvelope({
+      articleId: article.id,
+      brandId: BRAND_A,
+      document: { blocks: [block] },
+    });
+
+    const doc = await repo.autosaveWorkingDocument(article.id, BRAND_A, ORG_A, envelope, USER_A);
+    expect(doc.articleId).toBe(article.id);
+  });
+
+  it("should reject createVersion when sourceRef belongs to a different brand", async () => {
+    const repo = new InMemoryArticleRepository();
+    const foreignChunkId = crypto.randomUUID();
+    InMemoryArticleRepository.knownKnowledgeChunks.set(foreignChunkId, BRAND_B);
+
+    const article = await repo.createArticle({
+      organizationId: ORG_A,
+      brandId: BRAND_A,
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      status: "drafting",
+      title: "Foreign Source Test",
+      slug: "foreign-source",
+      locale: "en",
+      seo: {},
+      geo: {},
+      metadata: {},
+      sources: [],
+      relationships: [],
+      createdBy: USER_A,
+    });
+
+    const block = makeBlock("paragraph", {
+      content: { text: "Paragraph citing foreign chunk" },
+      sourceRefs: [foreignChunkId],
+    });
+
+    const envelope = makeEnvelope({
+      articleId: article.id,
+      brandId: BRAND_A,
+      document: { blocks: [block] },
+    });
+
+    await expect(
+      repo.createVersion(article.id, BRAND_A, ORG_A, envelope, "v1", USER_A)
+    ).rejects.toThrow(/Cross-brand reference rejected/i);
+  });
+});
+
+// ============================================================================
+// 13. OR-P05-FINAL — Canonical V1 Block Type Preservation
+// ============================================================================
+describe("OR-P05-FINAL — Canonical V1 Block Types Preservation", () => {
+  it("should validate and preserve comparisonTable with structured row objects", () => {
+    const block: ArticleBlock = {
+      id: crypto.randomUUID(),
+      type: "comparisonTable",
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      content: {
+        headers: ["Feature", "Our Brand", "Competitor"],
+        rows: [
+          { Feature: "Speed", "Our Brand": "10x", Competitor: "1x" },
+          { Feature: "Security", "Our Brand": "Enterprise", Competitor: "Basic" },
+        ],
+      },
+      attributes: {},
+      sourceRefs: [],
+      evidenceRefs: [],
+      provenance: { createdBy: USER_A, createdAt: new Date().toISOString() },
+    };
+
+    const envelope = makeEnvelope({ document: { blocks: [block] } });
+    const result = validateArticleEnvelope(envelope);
+    expect(result.valid).toBe(true);
+    expect(envelope.document.blocks[0].type).toBe("comparisonTable");
+  });
+
+  it("should validate and preserve statistic, callout, cta, faq, citation blocks with specific fields", () => {
+    const evidenceId = crypto.randomUUID();
+
+    const statBlock: ArticleBlock = {
+      id: crypto.randomUUID(),
+      type: "statistic",
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      content: { value: "99.9%", label: "Uptime" },
+      attributes: {},
+      sourceRefs: [],
+      evidenceRefs: [evidenceId],
+      provenance: { createdBy: USER_A, createdAt: new Date().toISOString() },
+    };
+
+    const calloutBlock: ArticleBlock = {
+      id: crypto.randomUUID(),
+      type: "callout",
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      content: { variant: "tip", text: "Important guidance note." },
+      attributes: {},
+      sourceRefs: [],
+      evidenceRefs: [],
+      provenance: { createdBy: USER_A, createdAt: new Date().toISOString() },
+    };
+
+    const ctaBlock: ArticleBlock = {
+      id: crypto.randomUUID(),
+      type: "cta",
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      content: { label: "Sign Up", href: "https://example.com/signup", text: "Get started today" },
+      attributes: {},
+      sourceRefs: [],
+      evidenceRefs: [],
+      provenance: { createdBy: USER_A, createdAt: new Date().toISOString() },
+    };
+
+    const faqBlock: ArticleBlock = {
+      id: crypto.randomUUID(),
+      type: "faq",
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      content: { question: "Is this secure?", answer: "Yes, multi-tenant RLS is enforced." },
+      attributes: {},
+      sourceRefs: [],
+      evidenceRefs: [],
+      provenance: { createdBy: USER_A, createdAt: new Date().toISOString() },
+    };
+
+    const citationBlock: ArticleBlock = {
+      id: crypto.randomUUID(),
+      type: "citation",
+      schemaVersion: ARTICLE_SCHEMA_VERSION,
+      content: { text: "According to 2026 Industry Report" },
+      attributes: {},
+      sourceRefs: [],
+      evidenceRefs: [evidenceId],
+      provenance: { createdBy: USER_A, createdAt: new Date().toISOString() },
+    };
+
+    const envelope = makeEnvelope({
+      document: { blocks: [statBlock, calloutBlock, ctaBlock, faqBlock, citationBlock] },
+    });
+    const result = validateArticleEnvelope(envelope);
+    expect(result.valid).toBe(true);
+
+    const types = envelope.document.blocks.map((b) => b.type);
+    expect(types).toEqual(["statistic", "callout", "cta", "faq", "citation"]);
+  });
+});
+
+

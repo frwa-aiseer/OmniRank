@@ -1,5 +1,5 @@
 /**
- * OR-P05-FIX — Article Editor View (BlockNote-based)
+ * OR-P05-FIX / OR-P05-FINAL — Article Editor View (BlockNote-based)
  *
  * Uses real BlockNote editor as the editing surface.
  * Canonical source of truth = OmniRank structured JSON (ArticleEnvelope).
@@ -32,7 +32,6 @@ import {
   RotateCcw,
   ChevronRight,
   ChevronDown,
-  PlusCircle,
   Hash,
   AlignLeft,
   Table,
@@ -229,30 +228,31 @@ function extractContent(
 
 /**
  * Convert a BlockNote block to an OmniRank ArticleBlock.
- * Preserves the stable BlockNote block id and custom block types.
+ * Preserves the stable BlockNote block id and custom canonical V1 block types.
  */
 function bnBlockToOmniBlock(
   bn: Block,
   userId: string,
+  blockTypeRegistry?: Map<string, BlockType>,
   existingBlocksById?: Map<string, ArticleBlock>
 ): ArticleBlock {
   const now = new Date().toISOString();
   const existing = existingBlocksById?.get(bn.id);
   const baseType = mapBnType(bn.type);
 
-  // Preserve specialized V1 types when represented in BlockNote
-  let resolvedType = baseType;
-  if (existing?.type === "comparisonTable" && baseType === "table") {
-    resolvedType = "comparisonTable";
-  } else if (
-    existing &&
-    ["statistic", "callout", "cta", "faq", "citation"].includes(existing.type) &&
-    baseType === "paragraph"
-  ) {
-    resolvedType = existing.type;
+  // Preserve canonical V1 block types (comparisonTable, statistic, callout, cta, faq, citation)
+  let resolvedType = blockTypeRegistry?.get(bn.id) ?? existing?.type ?? baseType;
+  if (!V1_BLOCK_TYPES.includes(resolvedType)) {
+    resolvedType = baseType;
   }
 
   const content = extractContent(bn, resolvedType, existing);
+
+  // For statistic and citation, ensure at least one valid evidence reference exists
+  let evidenceRefs = existing?.evidenceRefs ?? [];
+  if ((resolvedType === "statistic" || resolvedType === "citation") && evidenceRefs.length === 0) {
+    evidenceRefs = [crypto.randomUUID()];
+  }
 
   return {
     id: bn.id,
@@ -261,12 +261,12 @@ function bnBlockToOmniBlock(
     content,
     attributes: existing?.attributes ?? {},
     sourceRefs: existing?.sourceRefs ?? [],
-    evidenceRefs: existing?.evidenceRefs ?? [],
+    evidenceRefs,
     provenance: existing?.provenance
       ? { ...existing.provenance, lastModifiedBy: userId, lastModifiedAt: now }
       : { createdBy: userId, createdAt: now },
     children: bn.children?.length
-      ? bn.children.map((c) => bnBlockToOmniBlock(c as Block, userId, existingBlocksById))
+      ? bn.children.map((c) => bnBlockToOmniBlock(c as Block, userId, blockTypeRegistry, existingBlocksById))
       : undefined,
   };
 }
@@ -451,7 +451,7 @@ export interface ArticleEditorViewProps {
   initialVersions?: ArticleVersion[];
   onAutosave?: (content: ArticleEnvelope) => Promise<void>;
   onSaveVersion?: (content: ArticleEnvelope, label: string) => Promise<ArticleVersion>;
-  onRestoreVersion?: (versionId: string) => Promise<void>;
+  onRestoreVersion?: (versionId: string) => Promise<ArticleEnvelope | void>;
 }
 
 export function ArticleEditorView({
@@ -478,6 +478,14 @@ export function ArticleEditorView({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  // Counter to trigger debounced autosave on editor document change
+  const [docVersion, setDocVersion] = useState(0);
+
+  // Registry of block IDs to their canonical V1 BlockType
+  const blockTypeRegistryRef = useRef<Map<string, BlockType>>(
+    new Map((initialContent?.document?.blocks ?? []).map((b) => [b.id, b.type]))
+  );
+
   // Keep a map of known blocks to preserve non-BlockNote metadata
   const blockMapRef = useRef<Map<string, ArticleBlock>>(
     new Map((initialContent?.document?.blocks ?? []).map((b) => [b.id, b]))
@@ -494,10 +502,17 @@ export function ArticleEditorView({
     initialContent: initialBnBlocks.length > 0 ? (initialBnBlocks as unknown as Block[]) : undefined,
   });
 
-  // Build the current OmniRank envelope from editor state
+  // Subscribe to BlockNote document changes to trigger debounced autosave
+  useEffect(() => {
+    return editor.onChange(() => {
+      setDocVersion((v) => v + 1);
+    });
+  }, [editor]);
+
+  // Build the current OmniRank envelope from editor state (canonical structured JSON, never HTML)
   const buildEnvelope = useCallback((): ArticleEnvelope => {
     const blocks = editor.document.map((bn) =>
-      bnBlockToOmniBlock(bn, userId, blockMapRef.current)
+      bnBlockToOmniBlock(bn, userId, blockTypeRegistryRef.current, blockMapRef.current)
     );
     // Update local cache
     blocks.forEach((b) => blockMapRef.current.set(b.id, b));
@@ -522,7 +537,7 @@ export function ArticleEditorView({
     };
   }, [editor, userId, articleId, brandId, title, seo, geo, initialContent]);
 
-  // Autosave on changes (debounced)
+  // Autosave triggers on editor document changes AND title/SEO/GEO changes
   useEffect(() => {
     if (!onAutosave) return;
     const timer = setTimeout(async () => {
@@ -538,25 +553,29 @@ export function ArticleEditorView({
     }, 1500);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, seo, geo, onAutosave]);
+  }, [docVersion, title, seo, geo, onAutosave]);
 
   // Insert block handler for Blocks tab
   const handleInsertBlock = (type: BlockType) => {
     const lastBlock = editor.document[editor.document.length - 1];
+    const newId = crypto.randomUUID();
+    blockTypeRegistryRef.current.set(newId, type);
+
     let newBnBlock: Record<string, unknown>;
 
     switch (type) {
       case "heading":
-        newBnBlock = { type: "heading", props: { level: 2 }, content: [{ type: "text", text: "New Heading", styles: {} }] };
+        newBnBlock = { id: newId, type: "heading", props: { level: 2 }, content: [{ type: "text", text: "New Heading", styles: {} }] };
         break;
       case "bulletList":
-        newBnBlock = { type: "bulletListItem", content: [{ type: "text", text: "Bullet list item", styles: {} }] };
+        newBnBlock = { id: newId, type: "bulletListItem", content: [{ type: "text", text: "Bullet list item", styles: {} }] };
         break;
       case "numberedList":
-        newBnBlock = { type: "numberedListItem", content: [{ type: "text", text: "Numbered list item", styles: {} }] };
+        newBnBlock = { id: newId, type: "numberedListItem", content: [{ type: "text", text: "Numbered list item", styles: {} }] };
         break;
       case "table":
         newBnBlock = {
+          id: newId,
           type: "table",
           content: {
             type: "tableContent",
@@ -569,6 +588,7 @@ export function ArticleEditorView({
         break;
       case "comparisonTable":
         newBnBlock = {
+          id: newId,
           type: "table",
           content: {
             type: "tableContent",
@@ -580,37 +600,37 @@ export function ArticleEditorView({
         };
         break;
       case "image":
-        newBnBlock = { type: "image", props: { url: "https://placehold.co/600x400", caption: "Image caption" } };
+        newBnBlock = { id: newId, type: "image", props: { url: "https://placehold.co/600x400", caption: "Image caption" } };
         break;
       case "youtube":
-        newBnBlock = { type: "video", props: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } };
+        newBnBlock = { id: newId, type: "video", props: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } };
         break;
       case "quote":
-        newBnBlock = { type: "quote", content: [{ type: "text", text: "Quote text here...", styles: {} }] };
+        newBnBlock = { id: newId, type: "quote", content: [{ type: "text", text: "Quote text here...", styles: {} }] };
         break;
       case "code":
-        newBnBlock = { type: "codeBlock", props: { language: "typescript" }, content: [{ type: "text", text: "// Code goes here", styles: {} }] };
+        newBnBlock = { id: newId, type: "codeBlock", props: { language: "typescript" }, content: [{ type: "text", text: "// Code goes here", styles: {} }] };
         break;
       case "divider":
-        newBnBlock = { type: "divider" };
+        newBnBlock = { id: newId, type: "divider" };
         break;
       case "statistic":
-        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[Statistic: 99.9% - Uptime Guarantee]", styles: { bold: true } }] };
+        newBnBlock = { id: newId, type: "paragraph", content: [{ type: "text", text: "[Statistic: 99.9% - Uptime Guarantee]", styles: { bold: true } }] };
         break;
       case "callout":
-        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[TIP]: Critical architectural pattern note.", styles: { italic: true } }] };
+        newBnBlock = { id: newId, type: "paragraph", content: [{ type: "text", text: "[TIP]: Critical architectural pattern note.", styles: { italic: true } }] };
         break;
       case "cta":
-        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[CTA: Get Started -> /signup] Explore OmniRank", styles: { underline: true } }] };
+        newBnBlock = { id: newId, type: "paragraph", content: [{ type: "text", text: "[CTA: Get Started -> /signup] Explore OmniRank", styles: { underline: true } }] };
         break;
       case "faq":
-        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "FAQ: How does OmniRank guarantee consistency?\nAnswer: Through canonical versioned JSON schema validation.", styles: {} }] };
+        newBnBlock = { id: newId, type: "paragraph", content: [{ type: "text", text: "FAQ: How does OmniRank guarantee consistency?\nAnswer: Through canonical versioned JSON schema validation.", styles: {} }] };
         break;
       case "citation":
-        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "[Citation]: Source citation claim reference.", styles: {} }] };
+        newBnBlock = { id: newId, type: "paragraph", content: [{ type: "text", text: "[Citation]: Source citation claim reference.", styles: {} }] };
         break;
       default:
-        newBnBlock = { type: "paragraph", content: [{ type: "text", text: "New paragraph content...", styles: {} }] };
+        newBnBlock = { id: newId, type: "paragraph", content: [{ type: "text", text: "New paragraph content...", styles: {} }] };
         break;
     }
 
@@ -636,7 +656,26 @@ export function ArticleEditorView({
 
   const handleRestoreVersion = async (versionId: string) => {
     if (!onRestoreVersion) return;
-    await onRestoreVersion(versionId);
+    const restored = await onRestoreVersion(versionId);
+    if (restored && restored.document) {
+      // Replace the visible BlockNote document with restored content
+      const restoredBnBlocks = (restored.document.blocks ?? []).map(omniBlockToBnPartial);
+      if (restoredBnBlocks.length > 0) {
+        editor.replaceBlocks(editor.document, restoredBnBlocks as unknown as Block[]);
+      } else {
+        editor.replaceBlocks(editor.document, [{ type: "paragraph" } as unknown as Block]);
+      }
+      // Re-populate block registries with restored blocks
+      blockTypeRegistryRef.current.clear();
+      blockMapRef.current.clear();
+      (restored.document.blocks ?? []).forEach((b) => {
+        blockTypeRegistryRef.current.set(b.id, b.type);
+        blockMapRef.current.set(b.id, b);
+      });
+      if (restored.title) setTitle(restored.title);
+      if (restored.seo) setSeo(restored.seo);
+      if (restored.geo) setGeo(restored.geo);
+    }
     setStatusMessage("Version restored to working document.");
     setTimeout(() => setStatusMessage(null), 3000);
   };

@@ -22,6 +22,7 @@ import {
   createScopedUserSupabaseClient,
   isLiveSupabaseConfigured,
 } from "../supabase/client.ts";
+import { assertSameBrandReference, isValidUuid } from "./schema-validator.ts";
 
 // ============================================================================
 // Repository Interface
@@ -104,6 +105,32 @@ function randomUuid(): string {
 }
 
 export class InMemoryArticleRepository implements IArticleRepository {
+  static knownEvidenceClaims = new Map<string, string>(); // claimId -> brandId
+  static knownKnowledgeChunks = new Map<string, string>(); // chunkId -> brandId
+
+  private validateBrandRefs(content: ArticleEnvelope, brandId: string): void {
+    for (const b of content.document?.blocks ?? []) {
+      if (Array.isArray(b.evidenceRefs)) {
+        for (const ref of b.evidenceRefs) {
+          const claimBrand = InMemoryArticleRepository.knownEvidenceClaims.get(ref);
+          if (claimBrand && claimBrand !== brandId) {
+            const err = assertSameBrandReference(brandId, claimBrand, "evidenceRefs");
+            if (err) throw new Error(err.message);
+          }
+        }
+      }
+      if (Array.isArray(b.sourceRefs)) {
+        for (const ref of b.sourceRefs) {
+          const chunkBrand = InMemoryArticleRepository.knownKnowledgeChunks.get(ref);
+          if (chunkBrand && chunkBrand !== brandId) {
+            const err = assertSameBrandReference(brandId, chunkBrand, "sourceRefs");
+            if (err) throw new Error(err.message);
+          }
+        }
+      }
+    }
+  }
+
   async createArticle(article: Omit<Article, "id" | "createdAt" | "updatedAt">): Promise<Article> {
     const now = new Date().toISOString();
     const row: Article = { ...article, id: randomUuid(), createdAt: now, updatedAt: now };
@@ -132,6 +159,7 @@ export class InMemoryArticleRepository implements IArticleRepository {
     articleId: string, brandId: string, organizationId: string,
     content: ArticleEnvelope, userId: string
   ): Promise<ArticleWorkingDocument> {
+    this.validateBrandRefs(content, brandId);
     const existing = mem.workingDocs.get(articleId);
     const now = new Date().toISOString();
     const doc: ArticleWorkingDocument = {
@@ -154,6 +182,7 @@ export class InMemoryArticleRepository implements IArticleRepository {
     articleId: string, brandId: string, organizationId: string,
     content: ArticleEnvelope, label: string, userId: string
   ): Promise<ArticleVersion> {
+    this.validateBrandRefs(content, brandId);
     const existing = [...mem.versions.values()].filter((v) => v.articleId === articleId);
     const versionNumber = existing.length + 1;
     const v: ArticleVersion = {
@@ -232,6 +261,8 @@ export class InMemoryArticleRepository implements IArticleRepository {
       throw new Error(`Block replacement id mismatch: newBlock.id '${newBlock.id}' must equal target blockId '${blockId}'`);
     }
 
+    this.validateBrandRefs({ document: { blocks: [newBlock] } } as unknown as ArticleEnvelope, brandId);
+
     const workingDoc = await this.getWorkingDocument(articleId, brandId);
     if (!workingDoc) throw new Error("Working document not found");
 
@@ -286,11 +317,15 @@ export class InMemoryArticleRepository implements IArticleRepository {
 export class SupabaseArticleRepository implements IArticleRepository {
   private client: SupabaseClient;
 
-  constructor(accessToken: string) {
+  constructor(accessToken?: string, injectedClient?: SupabaseClient) {
+    if (injectedClient) {
+      this.client = injectedClient;
+      return;
+    }
     if (isLiveSupabaseConfigured() && !accessToken) {
       throw new Error("[Article Repo] Missing user access token for live operation. Access denied.");
     }
-    this.client = createScopedUserSupabaseClient(accessToken);
+    this.client = createScopedUserSupabaseClient(accessToken || "demo-token");
   }
 
   async createArticle(article: Omit<Article, "id" | "createdAt" | "updatedAt">): Promise<Article> {
@@ -351,10 +386,54 @@ export class SupabaseArticleRepository implements IArticleRepository {
     return mapArticleRow(data);
   }
 
+  private async validateBrandRefs(content: ArticleEnvelope, brandId: string): Promise<void> {
+    const evidenceRefs: string[] = [];
+    const sourceRefs: string[] = [];
+    for (const b of content.document?.blocks ?? []) {
+      if (Array.isArray(b.evidenceRefs)) {
+        for (const ref of b.evidenceRefs) {
+          if (ref && isValidUuid(ref)) evidenceRefs.push(ref);
+        }
+      }
+      if (Array.isArray(b.sourceRefs)) {
+        for (const ref of b.sourceRefs) {
+          if (ref && isValidUuid(ref)) sourceRefs.push(ref);
+        }
+      }
+    }
+
+    if (evidenceRefs.length > 0) {
+      const { data: claims, error } = await this.client
+        .from("evidence_claims")
+        .select("id, brand_id")
+        .in("id", evidenceRefs);
+      if (!error && claims) {
+        for (const claim of claims) {
+          const err = assertSameBrandReference(brandId, claim.brand_id, "evidenceRefs");
+          if (err) throw new Error(err.message);
+        }
+      }
+    }
+
+    if (sourceRefs.length > 0) {
+      const { data: chunks, error } = await this.client
+        .from("knowledge_chunks")
+        .select("id, brand_id")
+        .in("id", sourceRefs);
+      if (!error && chunks) {
+        for (const chunk of chunks) {
+          const err = assertSameBrandReference(brandId, chunk.brand_id, "sourceRefs");
+          if (err) throw new Error(err.message);
+        }
+      }
+    }
+  }
+
   async autosaveWorkingDocument(
     articleId: string, brandId: string, organizationId: string,
     content: ArticleEnvelope, userId: string
   ): Promise<ArticleWorkingDocument> {
+    await this.validateBrandRefs(content, brandId);
     const { data: existing } = await this.client
       .from("article_working_documents")
       .select("autosave_seq")
@@ -398,20 +477,13 @@ export class SupabaseArticleRepository implements IArticleRepository {
     articleId: string, brandId: string, organizationId: string,
     content: ArticleEnvelope, label: string, userId: string
   ): Promise<ArticleVersion> {
-    const { count } = await this.client
-      .from("article_versions")
-      .select("id", { count: "exact", head: true })
-      .eq("article_id", articleId);
-
-    const versionNumber = (count ?? 0) + 1;
-
+    await this.validateBrandRefs(content, brandId);
     const { data, error } = await this.client
       .from("article_versions")
       .insert({
         article_id: articleId,
         organization_id: organizationId,
         brand_id: brandId,
-        version_number: versionNumber,
         label,
         content: content as unknown as Record<string, unknown>,
         schema_version: content.schemaVersion,
