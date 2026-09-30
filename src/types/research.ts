@@ -4,6 +4,7 @@ export type ResearchQuestionStatus = 'pending' | 'answered' | 'needs_more_resear
 export type ResearchSourceClassification = 'brand' | 'primary' | 'authoritative_external' | 'competitor' | 'search_result' | 'weak';
 export type ResearchFindingSupportStatus = 'supported' | 'partially_supported' | 'unsupported' | 'conflicting';
 export type ContentBriefStatus = 'draft' | 'review' | 'approved' | 'rejected';
+export type ResearchQuestionOrigin = 'user' | 'opportunity' | 'brand_brain' | 'system';
 
 export interface ResearchProject {
   id: string;
@@ -11,6 +12,7 @@ export interface ResearchProject {
   brandId: string;
   opportunityId?: string;
   articleId?: string;
+  opportunityContext?: any;
   title: string;
   objective: string;
   mode: ResearchMode;
@@ -27,7 +29,7 @@ export interface ResearchQuestion {
   brandId: string;
   questionText: string;
   status: ResearchQuestionStatus;
-  originType: string;
+  originType: ResearchQuestionOrigin;
   originReference?: string;
   orderIndex: number;
   createdAt: string;
@@ -48,7 +50,10 @@ export interface ResearchSource {
   extractedText?: string;
   metadata: any;
   knowledgeSourceId?: string;
+  knowledgeDocumentId?: string;
+  knowledgeChunkId?: string;
   evidenceSourceId?: string;
+  evidenceClaimId?: string;
   createdAt: string;
 }
 
@@ -92,3 +97,35 @@ export interface ContentBrief {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface ResearchConfig {
+  maxSources: number;
+  maxQuestions: number;
+  allowExternal: boolean;
+  requireMultipleSources: boolean;
+  checkConflicts: boolean;
+}
+
+export const RESEARCH_MODE_CONFIGS: Record<ResearchMode, ResearchConfig> = {
+  fast: {
+    maxSources: 5,
+    maxQuestions: 3,
+    allowExternal: false,
+    requireMultipleSources: false,
+    checkConflicts: false,
+  },
+  standard: {
+    maxSources: 15,
+    maxQuestions: 8,
+    allowExternal: true,
+    requireMultipleSources: false,
+    checkConflicts: true,
+  },
+  deep: {
+    maxSources: 50,
+    maxQuestions: 20,
+    allowExternal: true,
+    requireMultipleSources: true,
+    checkConflicts: true,
+  },
+};
