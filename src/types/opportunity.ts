@@ -14,6 +14,8 @@ export interface Opportunity {
   brandId: string;
   websiteId?: string;
   
+  fingerprint: string;
+  
   type: OpportunityType;
   status: OpportunityStatus;
   

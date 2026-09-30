@@ -71,8 +71,22 @@ export const OpportunitiesView: React.FC = () => {
     }
   };
 
-  const createRelatedArticle = (opp: Opportunity) => {
-    setCurrentView("content");
+  const createRelatedArticle = async (opp: Opportunity) => {
+    if (!currentBrand || currentBrand.id === "00000000-0000-0000-0000-000000000000") return;
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token || "demo-token";
+      
+      const res = await fetch(`/api/opportunities/${currentBrand.id}/${opp.id}/create-article`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setCurrentView("content");
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const filtered = filter === "all" ? opportunities : opportunities.filter(o => o.type === filter);

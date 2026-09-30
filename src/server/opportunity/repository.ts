@@ -8,6 +8,7 @@ function mapRow(row: any): Opportunity {
     organizationId: row.organization_id,
     brandId: row.brand_id,
     websiteId: row.website_id ?? undefined,
+    fingerprint: row.fingerprint,
     type: row.type,
     status: row.status,
     title: row.title,
@@ -52,11 +53,12 @@ export class OpportunityRepository {
     return data ? mapRow(data) : null;
   }
 
-  async createOpportunity(opp: Omit<Opportunity, "id" | "createdAt" | "updatedAt">): Promise<Opportunity> {
+  async createOpportunity(opp: Omit<Opportunity, "id" | "createdAt" | "updatedAt">): Promise<Opportunity | null> {
     const { data, error } = await this.client.from("opportunities").insert({
       organization_id: opp.organizationId,
       brand_id: opp.brandId,
       website_id: opp.websiteId,
+      fingerprint: opp.fingerprint,
       type: opp.type,
       status: opp.status,
       title: opp.title,
@@ -70,10 +72,16 @@ export class OpportunityRepository {
       target_keyword: opp.targetKeyword,
       target_url: opp.targetUrl,
       related_article_id: opp.relatedArticleId,
-    }).select().single();
+    }).select().maybeSingle();
     
-    if (error) throw new Error(error.message);
-    return mapRow(data);
+    // If it violates unique constraint on (brand_id, fingerprint), we just swallow it here (or let engine handle it)
+    if (error) {
+      if (error.code === '23505') {
+         return null; // duplicate
+      }
+      throw new Error(error.message);
+    }
+    return data ? mapRow(data) : null;
   }
 
   async updateStatus(id: string, brandId: string, status: OpportunityStatus, articleId?: string): Promise<Opportunity> {
@@ -98,7 +106,6 @@ export class OpportunityRepository {
   }
 }
 
-export function getOpportunityRepository(userToken?: string) {
-  const client = userToken ? createScopedUserSupabaseClient(userToken) : getAdminSupabaseClient();
+export function getOpportunityRepository(client: SupabaseClient) {
   return new OpportunityRepository(client);
 }
