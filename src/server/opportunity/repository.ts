@@ -90,7 +90,6 @@ export class OpportunityRepository {
       updated_at: new Date().toISOString() 
     };
     if (status === 'dismissed') updatePayload.dismissed_at = new Date().toISOString();
-    if (status === 'completed') updatePayload.completed_at = new Date().toISOString();
     if (articleId) updatePayload.related_article_id = articleId;
 
     const { data, error } = await this.client

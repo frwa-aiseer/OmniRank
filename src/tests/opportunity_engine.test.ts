@@ -130,3 +130,32 @@ describe("OR-P06-PREDEPLOY — Final Auth + Handoff Fixes", () => {
     expect(content).toContain("v_opp.related_article_id IS NOT NULL THEN"); // Idempotency
   });
 });
+
+describe("OR-P06-LAST-GATE — RPC AUTH ONLY", () => {
+  it("Viewer handoff denied (migration check)", () => {
+    const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
+    const content = require("node:fs").readFileSync(MIG_12, "utf8");
+    expect(content).toContain("v_brand_role NOT IN ('strategist', 'writer')");
+    expect(content).toContain("Forbidden: Not authorized for this brand");
+  });
+
+  it("Writer accepted handoff allowed, new/dismissed/completed denied (migration check)", () => {
+    const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
+    const content = require("node:fs").readFileSync(MIG_12, "utf8");
+    expect(content).toContain("Cannot handoff dismissed or completed opportunities");
+    expect(content).toContain("Writer can only handoff accepted or in_progress opportunities");
+  });
+
+  it("Writer website_id mutation denied (migration check)", () => {
+    const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
+    const content = require("node:fs").readFileSync(MIG_12, "utf8");
+    expect(content).toContain("NEW.website_id IS DISTINCT FROM OLD.website_id");
+  });
+
+  it("completed_at assigned by DB and client cannot control (migration check)", () => {
+    const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
+    const content = require("node:fs").readFileSync(MIG_12, "utf8");
+    expect(content).toContain("completed_at is strictly database-controlled");
+    expect(content).toContain("NEW.completed_at = NOW();");
+  });
+});

@@ -1,6 +1,6 @@
 -- ============================================================================
 -- Migration: 20260929000012_opportunities_schema.sql
--- Gate: OR-P06-PREDEPLOY — Final Auth + Handoff Fix
+-- Gate: OR-P06-LAST-GATE — RPC AUTH ONLY
 -- Description: Tenant-scoped opportunities for content/evidence gaps.
 -- ============================================================================
 
@@ -80,6 +80,16 @@ BEGIN
     IF NEW.brand_id IS DISTINCT FROM OLD.brand_id THEN
       RAISE EXCEPTION 'brand_id cannot be modified';
     END IF;
+
+    -- Client must not control completed_at
+    IF NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
+      RAISE EXCEPTION 'completed_at is strictly database-controlled';
+    END IF;
+
+    -- completed_at logic
+    IF NEW.status = 'completed' AND OLD.status != 'completed' THEN
+      NEW.completed_at = NOW();
+    END IF;
   END IF;
 
   -- 2. Tenant invariants
@@ -136,6 +146,7 @@ BEGIN
       
       -- Field mutability check
       IF NEW.fingerprint IS DISTINCT FROM OLD.fingerprint OR
+         NEW.website_id IS DISTINCT FROM OLD.website_id OR
          NEW.type IS DISTINCT FROM OLD.type OR
          NEW.title IS DISTINCT FROM OLD.title OR
          NEW.summary IS DISTINCT FROM OLD.summary OR
@@ -152,12 +163,6 @@ BEGIN
          RAISE EXCEPTION 'Writers can only update workflow status and related article';
       END IF;
 
-      -- completed_at logic
-      IF NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
-        IF NEW.status != 'completed' THEN
-          RAISE EXCEPTION 'completed_at can only be updated when status is completed';
-        END IF;
-      END IF;
     END IF;
     RETURN NEW;
   END IF;
@@ -215,10 +220,24 @@ DECLARE
   v_article_id UUID;
   v_slug TEXT;
   v_title TEXT;
+  v_brand_role TEXT;
+  v_org_role TEXT;
 BEGIN
   -- Check auth
   IF auth.uid() IS NULL THEN
     RAISE EXCEPTION 'Authentication required';
+  END IF;
+
+  -- Load roles
+  SELECT role INTO v_brand_role FROM public.brand_members
+  WHERE brand_id = p_brand_id AND user_id = auth.uid();
+  
+  SELECT role INTO v_org_role FROM public.organization_members
+  WHERE organization_id = (SELECT organization_id FROM public.brands WHERE id = p_brand_id) AND user_id = auth.uid();
+
+  -- Role check
+  IF (v_brand_role IS NULL OR v_brand_role NOT IN ('strategist', 'writer')) AND (v_org_role IS NULL OR v_org_role NOT IN ('owner', 'admin')) THEN
+    RAISE EXCEPTION 'Forbidden: Not authorized for this brand';
   END IF;
 
   -- Lock the row to prevent concurrent handoffs
@@ -233,6 +252,17 @@ BEGIN
 
   IF v_opp.type NOT IN ('new_content', 'content_gap') THEN
     RAISE EXCEPTION 'Opportunity type does not support creating an article draft';
+  END IF;
+
+  -- Status logic
+  IF v_opp.status IN ('dismissed', 'completed') THEN
+    RAISE EXCEPTION 'Cannot handoff dismissed or completed opportunities';
+  END IF;
+
+  IF v_brand_role = 'writer' AND (v_org_role IS NULL OR v_org_role NOT IN ('owner', 'admin')) THEN
+    IF v_opp.status NOT IN ('accepted', 'in_progress') THEN
+      RAISE EXCEPTION 'Writer can only handoff accepted or in_progress opportunities';
+    END IF;
   END IF;
 
   -- Idempotency
