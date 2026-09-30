@@ -9,6 +9,7 @@ import { GrowthView } from "../views/GrowthView.tsx";
 import { BrandBrainView } from "../views/BrandBrainView.tsx";
 import { SettingsView } from "../views/SettingsView.tsx";
 import { AuthView } from "../views/AuthView.tsx";
+import { ResearchView } from "../views/ResearchView.tsx";
 
 export function Shell() {
   const { currentView, setCurrentView, loadDemoWorkspace } = useApp();
@@ -28,6 +29,8 @@ export function Shell() {
         return <HomeView />;
       case "opportunities":
         return <OpportunitiesView />;
+      case "research":
+        return <ResearchView />;
       case "content":
         return <ContentView />;
       case "calendar":

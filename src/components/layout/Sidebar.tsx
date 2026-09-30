@@ -33,6 +33,12 @@ const navItems: NavItem[] = [
     icon: Lightbulb,
   },
   {
+    id: "research",
+    label: "Research",
+    question: "What evidence do we have?",
+    icon: FileText, // Reusing icon for simplicity, or we could use another like Search
+  },
+  {
     id: "content",
     label: "Content",
     question: "What are we creating?",

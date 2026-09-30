@@ -1,6 +1,7 @@
 export type AppView =
   | "home"
   | "opportunities"
+  | "research"
   | "content"
   | "calendar"
   | "growth"

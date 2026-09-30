@@ -163,11 +163,32 @@ export const OpportunitiesView: React.FC = () => {
                 {(opp.status === 'accepted' || opp.status === 'in_progress') && (
                   <>
                     {(opp.type === 'new_content' || opp.type === 'content_gap') && (
-                      <button onClick={() => createRelatedArticle(opp)} className="flex items-center justify-center px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 w-full">
-                        <FilePlus2 className="w-4 h-4 mr-2" /> Start Draft
-                      </button>
+                      <>
+                        <button onClick={() => createRelatedArticle(opp)} className="flex items-center justify-center px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 w-full mb-2">
+                          <FilePlus2 className="w-4 h-4 mr-2" /> Start Draft
+                        </button>
+                        <button 
+                          onClick={async () => {
+                            if (!currentBrand) return;
+                            try {
+                              const { data: sessionData } = await supabase.auth.getSession();
+                              const token = sessionData.session?.access_token || "demo-token";
+                              const res = await fetch(`/api/research/${currentBrand.id}/handoff/${opp.id}`, {
+                                method: "POST",
+                                headers: { Authorization: `Bearer ${token}` }
+                              });
+                              if (res.ok) setCurrentView("research");
+                            } catch (e) {
+                              console.error(e);
+                            }
+                          }}
+                          className="flex items-center justify-center px-4 py-2 bg-white border border-indigo-200 text-indigo-700 rounded hover:bg-indigo-50 w-full"
+                        >
+                          <FilePlus2 className="w-4 h-4 mr-2" /> Start Research
+                        </button>
+                      </>
                     )}
-                    <button onClick={() => updateStatus(opp.id, "complete")} className="flex items-center justify-center px-4 py-2 bg-white border border-neutral-300 text-neutral-700 rounded hover:bg-neutral-50 w-full">
+                    <button onClick={() => updateStatus(opp.id, "complete")} className="flex items-center justify-center px-4 py-2 bg-white border border-neutral-300 text-neutral-700 rounded hover:bg-neutral-50 w-full mt-2">
                       Mark Completed
                     </button>
                   </>
