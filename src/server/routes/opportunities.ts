@@ -100,41 +100,24 @@ router.post("/:brandId/:id/create-article", async (req: Request, res: Response) 
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
 
   try {
-    const oppRepo = getOpportunityRepository(createScopedUserSupabaseClient(req.token));
-    const opp = await oppRepo.getOpportunity(id, brandId);
-    if (!opp) return void res.status(404).json({ error: "Opportunity not found" });
+    const client = createScopedUserSupabaseClient(req.token);
     
-    // Idempotency check: if it already has an article, just return it
-    if (opp.relatedArticleId && (opp.status === 'in_progress' || opp.status === 'completed')) {
-       return void res.json({ opportunity: opp });
-    }
-
-    if (opp.type !== 'new_content' && opp.type !== 'content_gap') {
-       return void res.status(400).json({ error: "Opportunity type does not support creating an article draft" });
-    }
-    
-    // Create the article draft
-    const { getArticleRepository } = await import("../article/repository.ts");
-    const articleRepo = getArticleRepository(req.token);
-    
-    const newArticle = await articleRepo.createArticle({
-       organizationId: opp.organizationId,
-       brandId: opp.brandId,
-       schemaVersion: "1",
-       status: "drafting",
-       title: opp.targetKeyword || opp.title,
-       slug: (opp.targetKeyword || opp.title).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
-       locale: "en",
-       seo: {},
-       geo: {},
-       metadata: { generatedFromOpportunity: opp.id },
-       sources: [],
-       relationships: [],
-       createdBy: auth.userId
+    // Call the atomic handoff RPC
+    const { data: articleId, error } = await client.rpc("handoff_opportunity_to_article", {
+      p_opportunity_id: id,
+      p_brand_id: brandId
     });
 
-    const updatedOpp = await oppRepo.updateStatus(id, brandId, "in_progress", newArticle.id);
-    res.json({ opportunity: updatedOpp });
+    if (error) {
+      if (error.message.includes("does not support")) return void res.status(400).json({ error: error.message });
+      if (error.message.includes("not found")) return void res.status(404).json({ error: error.message });
+      throw new Error(error.message);
+    }
+
+    // Return the updated opportunity
+    const oppRepo = getOpportunityRepository(client);
+    const opp = await oppRepo.getOpportunity(id, brandId);
+    res.json({ opportunity: opp, articleId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

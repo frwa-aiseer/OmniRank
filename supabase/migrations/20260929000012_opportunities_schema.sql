@@ -1,6 +1,6 @@
 -- ============================================================================
 -- Migration: 20260929000012_opportunities_schema.sql
--- Gate: OR-P06-FIX — Runtime + Tenant Integrity
+-- Gate: OR-P06-PREDEPLOY — Final Auth + Handoff Fix
 -- Description: Tenant-scoped opportunities for content/evidence gaps.
 -- ============================================================================
 
@@ -51,17 +51,17 @@ CREATE POLICY "opportunities_select_brand_member" ON public.opportunities
   FOR SELECT TO authenticated
   USING (authz.can_view_brand(brand_id));
 
--- INSERT: engine inserts are usually via service role, but if triggered via RPC/user, writers can create
-CREATE POLICY "opportunities_insert_writer" ON public.opportunities
+-- INSERT: Strategist or Admin only
+CREATE POLICY "opportunities_insert_strategist" ON public.opportunities
   FOR INSERT TO authenticated
   WITH CHECK (
-    authz.has_brand_role(brand_id, ARRAY['strategist','writer'])
+    authz.has_brand_role(brand_id, ARRAY['strategist'])
     OR authz.is_org_admin(organization_id)
   );
 
 -- UPDATE:
 -- Writers can accept/work (move to accepted/in_progress/completed)
--- Strategists/Admins can do everything (including dismiss)
+-- Strategists/Admins can do everything
 CREATE OR REPLACE FUNCTION public.fn_check_opportunity_update()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -73,7 +73,7 @@ DECLARE
   caller_org_role TEXT;
 BEGIN
   IF TG_OP = 'UPDATE' THEN
-    -- 1. Immutable fields
+    -- 1. Immutable fields for everyone
     IF NEW.organization_id IS DISTINCT FROM OLD.organization_id THEN
       RAISE EXCEPTION 'organization_id cannot be modified';
     END IF;
@@ -118,19 +118,45 @@ BEGIN
 
   IF caller_brand_role = 'writer' THEN
     IF TG_OP = 'UPDATE' THEN
-      -- Writer cannot dismiss
-      IF NEW.status = 'dismissed' THEN
-        RAISE EXCEPTION 'Writers cannot dismiss opportunities';
+      -- Cannot revive dismissed or completed
+      IF OLD.status IN ('dismissed', 'completed') THEN
+        RAISE EXCEPTION 'Writers cannot revive dismissed or completed opportunities';
+      END IF;
+
+      -- Valid workflow transitions check
+      IF NEW.status IS DISTINCT FROM OLD.status THEN
+        IF NOT (
+          (OLD.status = 'new' AND NEW.status = 'accepted') OR
+          (OLD.status = 'accepted' AND NEW.status = 'in_progress') OR
+          (OLD.status = 'in_progress' AND NEW.status = 'completed')
+        ) THEN
+          RAISE EXCEPTION 'Invalid workflow transition for writer';
+        END IF;
       END IF;
       
-      -- Writer cannot edit core details
-      IF NEW.title IS DISTINCT FROM OLD.title OR 
-         NEW.summary IS DISTINCT FROM OLD.summary OR 
-         NEW.rationale IS DISTINCT FROM OLD.rationale OR 
-         NEW.priority_score IS DISTINCT FROM OLD.priority_score OR 
+      -- Field mutability check
+      IF NEW.fingerprint IS DISTINCT FROM OLD.fingerprint OR
+         NEW.type IS DISTINCT FROM OLD.type OR
+         NEW.title IS DISTINCT FROM OLD.title OR
+         NEW.summary IS DISTINCT FROM OLD.summary OR
+         NEW.rationale IS DISTINCT FROM OLD.rationale OR
+         NEW.priority_score IS DISTINCT FROM OLD.priority_score OR
+         NEW.confidence_score IS DISTINCT FROM OLD.confidence_score OR
+         NEW.effort_score IS DISTINCT FROM OLD.effort_score OR
+         NEW.impact_score IS DISTINCT FROM OLD.impact_score OR
          NEW.source_signals IS DISTINCT FROM OLD.source_signals OR
-         NEW.target_keyword IS DISTINCT FROM OLD.target_keyword THEN
-         RAISE EXCEPTION 'Writers can only update status and related article';
+         NEW.target_keyword IS DISTINCT FROM OLD.target_keyword OR
+         NEW.target_url IS DISTINCT FROM OLD.target_url OR
+         NEW.dismissed_at IS DISTINCT FROM OLD.dismissed_at
+      THEN
+         RAISE EXCEPTION 'Writers can only update workflow status and related article';
+      END IF;
+
+      -- completed_at logic
+      IF NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
+        IF NEW.status != 'completed' THEN
+          RAISE EXCEPTION 'completed_at can only be updated when status is completed';
+        END IF;
       END IF;
     END IF;
     RETURN NEW;
@@ -172,3 +198,71 @@ CREATE POLICY "opportunities_delete_strategist" ON public.opportunities
     authz.has_brand_role(brand_id, ARRAY['strategist'])
     OR authz.is_org_admin(organization_id)
   );
+
+-- ============================================================================
+-- Atomic Article Handoff RPC
+-- ============================================================================
+CREATE OR REPLACE FUNCTION public.handoff_opportunity_to_article(
+  p_opportunity_id UUID,
+  p_brand_id UUID
+) RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_opp public.opportunities%ROWTYPE;
+  v_article_id UUID;
+  v_slug TEXT;
+  v_title TEXT;
+BEGIN
+  -- Check auth
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Authentication required';
+  END IF;
+
+  -- Lock the row to prevent concurrent handoffs
+  SELECT * INTO v_opp
+  FROM public.opportunities
+  WHERE id = p_opportunity_id AND brand_id = p_brand_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Opportunity not found or mismatch';
+  END IF;
+
+  IF v_opp.type NOT IN ('new_content', 'content_gap') THEN
+    RAISE EXCEPTION 'Opportunity type does not support creating an article draft';
+  END IF;
+
+  -- Idempotency
+  IF v_opp.related_article_id IS NOT NULL THEN
+    RETURN v_opp.related_article_id;
+  END IF;
+
+  -- Use target_keyword or title
+  v_title := COALESCE(v_opp.target_keyword, v_opp.title);
+  v_slug := regexp_replace(lower(v_title), '[^a-z0-9-]+', '-', 'g');
+  
+  -- Insert OR-P05 article draft (schemaVersion 1.0)
+  INSERT INTO public.articles (
+    organization_id, brand_id, schema_version, status, title, slug, locale,
+    seo, geo, metadata, sources, relationships, created_by
+  ) VALUES (
+    v_opp.organization_id, v_opp.brand_id, '1.0', 'drafting', v_title,
+    v_slug, 'en', '{}', '{}', jsonb_build_object('generatedFromOpportunity', v_opp.id), '[]', '[]', auth.uid()
+  ) RETURNING id INTO v_article_id;
+
+  -- Update opportunity
+  UPDATE public.opportunities
+  SET related_article_id = v_article_id,
+      status = 'in_progress',
+      updated_at = NOW()
+  WHERE id = p_opportunity_id;
+
+  RETURN v_article_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.handoff_opportunity_to_article(UUID, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.handoff_opportunity_to_article(UUID, UUID) TO authenticated, service_role;

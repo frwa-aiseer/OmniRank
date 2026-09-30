@@ -87,10 +87,46 @@ describe("OR-P06-FIX — Opportunity Engine Fixes", () => {
   it("Writer mutation restrictions (migration check)", () => {
     const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
     const content = require("node:fs").readFileSync(MIG_12, "utf8");
-    expect(content).toContain("Writers cannot dismiss opportunities");
+    expect(content).toContain("Writers cannot revive dismissed or completed opportunities");
     expect(content).toContain("NEW.title IS DISTINCT FROM OLD.title");
-    expect(content).toContain("Writers can only update status and related article");
+    expect(content).toContain("Writers can only update workflow status and related article");
     expect(content).toContain("organization_id cannot be modified");
     expect(content).toContain("brand_id cannot be modified");
+  });
+});
+
+describe("OR-P06-PREDEPLOY — Final Auth + Handoff Fixes", () => {
+  it("Writer cannot modify protected engine fields or revive dismissed/completed (migration check)", () => {
+    const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
+    const content = require("node:fs").readFileSync(MIG_12, "utf8");
+    
+    expect(content).toContain("Writers cannot revive dismissed or completed opportunities");
+    expect(content).toContain("Invalid workflow transition for writer");
+    
+    // Check fields protected
+    const fields = ['fingerprint', 'type', 'title', 'summary', 'rationale', 'priority_score', 'confidence_score', 'effort_score', 'impact_score', 'source_signals', 'target_keyword', 'target_url', 'dismissed_at'];
+    fields.forEach(f => {
+      expect(content).toContain(`NEW.${f} IS DISTINCT FROM OLD.${f}`);
+    });
+  });
+
+  it("Writer direct INSERT denied, Strategist/Admin generation allowed (migration check)", () => {
+    const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
+    const content = require("node:fs").readFileSync(MIG_12, "utf8");
+    
+    expect(content).toContain('CREATE POLICY "opportunities_insert_strategist"');
+    expect(content).toContain("authz.has_brand_role(brand_id, ARRAY['strategist'])");
+    
+  });
+
+  it("Article handoff creates schemaVersion 1.0 atomically and idempotently (migration check)", () => {
+    const MIG_12 = require("node:path").join(process.cwd(), "supabase/migrations/20260929000012_opportunities_schema.sql");
+    const content = require("node:fs").readFileSync(MIG_12, "utf8");
+    
+    expect(content).toContain("handoff_opportunity_to_article(");
+    expect(content).toContain("FOR UPDATE"); // locks row
+    expect(content).toContain("schema_version");
+    expect(content).toContain("'1.0'");
+    expect(content).toContain("v_opp.related_article_id IS NOT NULL THEN"); // Idempotency
   });
 });
