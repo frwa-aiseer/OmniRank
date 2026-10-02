@@ -94,7 +94,7 @@ researchRouter.post("/:brandId/projects/:projectId/sources", async (req: Request
   const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
   try {
-    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).addSource(req.params.projectId, req.params.brandId, req.body.orgId, req.body.classification, req.body.title, req.body.url));
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).addSource(req.params.projectId, req.params.brandId, req.body.orgId, req.body));
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 

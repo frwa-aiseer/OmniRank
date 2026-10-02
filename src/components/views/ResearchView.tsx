@@ -4,7 +4,8 @@ import { supabase } from "../../lib/supabase/client.ts";
 import { ResearchProject, ResearchQuestion, ResearchSource, ResearchFinding, ContentBrief } from "../../types/research.ts";
 
 export function ResearchView() {
-  const { currentBrand, currentOrg } = useApp();
+  const { currentBrand, currentOrg, currentUser } = useApp();
+  const currentBrandRole = currentUser?.brandRole;
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [selectedProject, setSelectedProject] = useState<ResearchProject | null>(null);
   
@@ -28,13 +29,18 @@ export function ResearchView() {
       }
     }
 
-    return fetch(url, {
+    const res = await fetch(url, {
       ...options,
       headers: { ...options.headers, Authorization: `Bearer ${token}` }
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || res.statusText);
+    }
+    return res;
   };
 
-  useEffect(() => {
+  const loadProjects = async () => {
     if (currentBrand) {
       fetchWithAuth(`/api/research/${currentBrand.id}/projects`)
         .then(res => res.json())
@@ -42,7 +48,9 @@ export function ResearchView() {
           if (Array.isArray(data)) setProjects(data);
         }).catch(err => console.error(err));
     }
-  }, [currentBrand]);
+  };
+
+  useEffect(() => { loadProjects(); }, [currentBrand]);
 
   const loadProjectDetails = async (project: ResearchProject) => {
     if (!currentBrand) return;
@@ -79,18 +87,17 @@ export function ResearchView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           orgId: currentOrg.id,
-          title: "Manual Research Project",
-          objective: "Explore new topics",
+          title: prompt("Project Title", "Manual Research Project") || "Manual Research Project",
+          objective: prompt("Objective", "Explore new topics") || "Explore new topics",
           mode: "standard"
         })
       });
-      if (res.ok) {
-        const p = await res.json();
-        setProjects([...projects, p]);
-        selectProject(p);
-      }
+      const p = await res.json();
+      setProjects([...projects, p]);
+      selectProject(p);
     } catch (err) {
       console.error(err);
+      alert(err);
     }
   };
   
@@ -102,23 +109,127 @@ export function ResearchView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ orgId: currentOrg.id })
       });
-      if (res.ok) {
-        const b = await res.json();
-        setBrief(b);
-      }
+      setBrief(await res.json());
     } catch (err) {
       console.error(err);
+      alert(err);
     }
   };
+
+  const actionAddQuestion = async () => {
+    if (!currentBrand || !currentOrg || !selectedProject) return;
+    const text = prompt("Question text:");
+    if (!text) return;
+    try {
+      const res = await fetchWithAuth(`/api/research/${currentBrand.id}/projects/${selectedProject.id}/questions`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: currentOrg.id, text })
+      });
+      setQuestions([...questions, await res.json()]);
+    } catch (err) { alert(err); }
+  };
+
+  const actionUpdateQuestion = async (q: ResearchQuestion) => {
+    if (!currentBrand || !selectedProject) return;
+    const text = prompt("Edit text:", q.questionText);
+    const status = prompt("Edit status (pending, answered, needs_more_research, not_answerable):", q.status);
+    if (!text && !status) return;
+    try {
+      const res = await fetchWithAuth(`/api/research/${currentBrand.id}/projects/${selectedProject.id}/questions/${q.id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionText: text || q.questionText, status: status || q.status })
+      });
+      const updated = await res.json();
+      setQuestions(questions.map(x => x.id === q.id ? updated : x));
+    } catch (err) { alert(err); }
+  };
+
+  const actionAddSource = async () => {
+    if (!currentBrand || !currentOrg || !selectedProject) return;
+    const title = prompt("Source Title:");
+    if (!title) return;
+    const url = prompt("Source URL (optional):") || undefined;
+    const classification = prompt("Classification (brand, primary, authoritative_external, competitor, search_result, weak):", "authoritative_external") || "authoritative_external";
+    try {
+      const res = await fetchWithAuth(`/api/research/${currentBrand.id}/projects/${selectedProject.id}/sources`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: currentOrg.id, classification, title, url })
+      });
+      setSources([...sources, await res.json()]);
+    } catch (err) { alert(err); }
+  };
+
+  const actionAddFinding = async () => {
+    if (!currentBrand || !currentOrg || !selectedProject) return;
+    const text = prompt("Finding Text:");
+    if (!text) return;
+    try {
+      const res = await fetchWithAuth(`/api/research/${currentBrand.id}/projects/${selectedProject.id}/findings`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: currentOrg.id, text, sourceRefs: [] })
+      });
+      setFindings([...findings, await res.json()]);
+    } catch (err) { alert(err); }
+  };
+
+  const actionReviewFinding = async (f: ResearchFinding) => {
+    if (!currentBrand || !selectedProject) return;
+    const status = prompt("Support Status (supported, partially_supported, unsupported, conflicting):", f.supportStatus);
+    const score = prompt("Confidence Score (0-100):", f.confidenceScore.toString());
+    const notes = prompt("Provenance Notes:", f.provenanceNotes || "");
+    if (!status) return;
+    try {
+      await fetchWithAuth(`/api/research/${currentBrand.id}/projects/${selectedProject.id}/findings/${f.id}/review`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ supportStatus: status, confidenceScore: parseInt(score || "0", 10), notes })
+      });
+      loadProjectDetails(selectedProject);
+    } catch (err) { alert(err); }
+  };
+
+  const actionEditBrief = async () => {
+    if (!currentBrand || !currentOrg || !selectedProject || !brief) return;
+    const title = prompt("Title:", brief.title);
+    const angle = prompt("Angle:", brief.angle);
+    if (!title) return;
+    try {
+      const res = await fetchWithAuth(`/api/research/${currentBrand.id}/projects/${selectedProject.id}/brief`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: currentOrg.id, title, angle, status: brief.status })
+      });
+      setBrief(await res.json());
+    } catch (err) { alert(err); }
+  };
+
+  const actionReviewBrief = async (newStatus: string) => {
+    if (!currentBrand || !selectedProject || !brief) return;
+    const notes = prompt("Review Notes:") || "";
+    try {
+      await fetchWithAuth(`/api/research/${currentBrand.id}/projects/${selectedProject.id}/brief/${brief.id}/review`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus, notes })
+      });
+      loadProjectDetails(selectedProject);
+    } catch (err) { alert(err); }
+  };
+
+  const currentOrgRole = currentUser?.orgRole;
+
+  const isOrgAdmin = currentOrgRole === 'admin' || currentOrgRole === 'owner';
+  const canWrite = currentBrandRole === 'writer' || currentBrandRole === 'strategist' || isOrgAdmin;
+  const canReview = currentBrandRole === 'reviewer' || currentBrandRole === 'strategist' || isOrgAdmin;
+  const canApprove = currentBrandRole === 'strategist' || isOrgAdmin;
 
   if (!selectedProject) {
     return (
       <div className="p-6 max-w-7xl mx-auto space-y-6">
         <div className="flex justify-between items-center">
           <h1 className="text-2xl font-bold text-gray-900">Research Projects</h1>
-          <button onClick={createManualProject} className="bg-indigo-600 text-white px-4 py-2 rounded shadow text-sm font-medium hover:bg-indigo-700">
-            + New Manual Project
-          </button>
+          {canWrite && (
+            <button onClick={createManualProject} className="bg-indigo-600 text-white px-4 py-2 rounded shadow text-sm font-medium hover:bg-indigo-700">
+              + New Manual Project
+            </button>
+          )}
         </div>
         <div className="grid gap-4">
           {projects.map(p => (
@@ -147,9 +258,11 @@ export function ResearchView() {
           <span className="font-semibold text-lg text-neutral-900">{selectedProject.title}</span>
         </div>
         <div className="space-x-2">
-          <button onClick={prepareBrief} className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">
-            Prepare Brief
-          </button>
+          {canWrite && (
+            <button onClick={prepareBrief} className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">
+              Prepare Brief
+            </button>
+          )}
         </div>
       </div>
 
@@ -158,14 +271,14 @@ export function ResearchView() {
         <div className="w-1/3 border-r bg-neutral-50 overflow-y-auto p-4 flex flex-col gap-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-neutral-900">Questions & Plan</h2>
-            <button className="text-xs text-indigo-600 hover:underline">+ Add</button>
+            {canWrite && <button onClick={actionAddQuestion} className="text-xs text-indigo-600 hover:underline">+ Add</button>}
           </div>
           {questions.map(q => (
             <div key={q.id} className="p-3 bg-white rounded shadow-sm border border-neutral-200 text-sm">
               <p className="font-medium text-neutral-800">{q.questionText}</p>
               <div className="mt-2 flex justify-between text-xs text-neutral-500 capitalize">
                 <span>{q.status} • {q.originType}</span>
-                <button className="text-indigo-500 hover:underline">Update</button>
+                {canWrite && <button onClick={() => actionUpdateQuestion(q)} className="text-indigo-500 hover:underline">Update</button>}
               </div>
             </div>
           ))}
@@ -176,14 +289,15 @@ export function ResearchView() {
         <div className="w-1/3 border-r bg-white overflow-y-auto p-4 flex flex-col gap-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-neutral-900">Findings & Content Brief</h2>
-            <button className="text-xs text-indigo-600 hover:underline">+ Add Finding</button>
+            {canWrite && <button onClick={actionAddFinding} className="text-xs text-indigo-600 hover:underline">+ Add Finding</button>}
           </div>
           
           {brief ? (
             <div className="p-4 bg-indigo-50 rounded border border-indigo-100 text-sm relative group">
-              <button className="absolute top-2 right-2 text-xs bg-white text-indigo-600 px-2 py-1 rounded shadow-sm hidden group-hover:block border">Edit Brief</button>
+              {canWrite && <button onClick={actionEditBrief} className="absolute top-2 right-2 text-xs bg-white text-indigo-600 px-2 py-1 rounded shadow-sm hidden group-hover:block border">Edit Brief</button>}
               <h3 className="font-bold text-indigo-900 mb-2">Draft Content Brief</h3>
               <div className="space-y-2">
+                <p><span className="font-semibold">Status:</span> {brief.status}</p>
                 <p><span className="font-semibold">Title:</span> {brief.title}</p>
                 <p><span className="font-semibold">Angle:</span> {brief.angle}</p>
                 <p><span className="font-semibold">Target Keyword:</span> {brief.targetKeyword || 'None'}</p>
@@ -197,8 +311,9 @@ export function ResearchView() {
                 </div>
               </div>
               <div className="mt-3 flex gap-2 border-t border-indigo-200 pt-3">
-                 <button className="text-xs bg-white border border-neutral-300 text-neutral-700 px-3 py-1 rounded">Review</button>
-                 <button className="text-xs bg-indigo-600 text-white px-3 py-1 rounded">Finalize</button>
+                 {canReview && <button onClick={() => actionReviewBrief('review')} className="text-xs bg-white border border-neutral-300 text-neutral-700 px-3 py-1 rounded">Set Review</button>}
+                 {canApprove && <button onClick={() => actionReviewBrief('approved')} className="text-xs bg-indigo-600 text-white px-3 py-1 rounded">Approve</button>}
+                 {canApprove && <button onClick={() => actionReviewBrief('rejected')} className="text-xs bg-rose-600 text-white px-3 py-1 rounded">Reject</button>}
               </div>
             </div>
           ) : (
@@ -207,10 +322,10 @@ export function ResearchView() {
             </div>
           )}
 
-          <h3 className="font-semibold text-neutral-700 mt-4">Verified Findings</h3>
+          <h3 className="font-semibold text-neutral-700 mt-4">Findings</h3>
           {findings.map(f => (
             <div key={f.id} className={`p-3 rounded border text-sm relative group ${f.supportStatus === 'unsupported' ? 'bg-rose-50 border-rose-200' : 'bg-white border-neutral-200 shadow-sm'}`}>
-              <button className="absolute top-2 right-2 text-xs bg-white border shadow-sm px-2 py-1 rounded hidden group-hover:block">Review</button>
+              {canReview && <button onClick={() => actionReviewFinding(f)} className="absolute top-2 right-2 text-xs bg-white border shadow-sm px-2 py-1 rounded hidden group-hover:block">Review</button>}
               <p className="font-medium text-neutral-800">{f.findingText}</p>
               <div className="mt-2 text-xs text-neutral-500 capitalize">
                 Status: {f.supportStatus.replace('_', ' ')} • Score: {f.confidenceScore}
@@ -223,7 +338,7 @@ export function ResearchView() {
         <div className="w-1/3 bg-neutral-50 overflow-y-auto p-4 flex flex-col gap-4">
           <div className="flex justify-between items-center">
             <h2 className="font-semibold text-neutral-900">Sources & Evidence</h2>
-            <button className="text-xs text-indigo-600 hover:underline">+ Add Source</button>
+            {canWrite && <button onClick={actionAddSource} className="text-xs text-indigo-600 hover:underline">+ Add Source</button>}
           </div>
           {sources.map(s => (
             <div key={s.id} className="p-3 bg-white rounded shadow-sm border border-neutral-200 text-sm">

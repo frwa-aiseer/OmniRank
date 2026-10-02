@@ -19,16 +19,27 @@ export class ResearchEngine {
     const sources = await repo.listSources(projectId, brandId);
     
     // 2. Fetch Brand Brain Context with bounds
-    const [
-      { data: brandProfiles, error: bpError },
-      { data: brandAudiences, error: baError }
-    ] = await Promise.all([
+    const queries = [
       this.client.from("brand_profiles").select("description, tone_of_voice").eq("brand_id", brandId).maybeSingle(),
-      this.client.from("brand_audiences").select("title, description").eq("brand_id", brandId).limit(5)
-    ]);
-    
-    if (bpError) throw new Error(`DB Error: ${bpError.message}`);
-    if (baError) throw new Error(`DB Error: ${baError.message}`);
+      this.client.from("brand_products").select("id").eq("brand_id", brandId),
+      this.client.from("brand_audiences").select("title, description").eq("brand_id", brandId),
+      this.client.from("brand_policies").select("id").eq("brand_id", brandId),
+      this.client.from("brand_competitors").select("id").eq("brand_id", brandId),
+      this.client.from("knowledge_sources").select("id").eq("brand_id", brandId),
+      this.client.from("knowledge_documents").select("id").eq("brand_id", brandId),
+      this.client.from("knowledge_chunks").select("id").eq("brand_id", brandId),
+      this.client.from("evidence_sources").select("id").eq("brand_id", brandId),
+      this.client.from("evidence_claims").select("id").eq("brand_id", brandId),
+      this.client.from("articles").select("id").eq("brand_id", brandId),
+    ];
+
+    const results = await Promise.all(queries);
+    for (const res of results) {
+      if (res.error) throw new Error(`DB Error fetching context: ${res.error.message}`);
+    }
+
+    const brandProfiles = results[0].data;
+    const brandAudiences = results[2].data as any[];
 
     // Apply budget limits
     const limitedSources = sources.slice(0, config.maxSources);
@@ -38,6 +49,17 @@ export class ResearchEngine {
     const supportedFindings = findings.filter(f => f.supportStatus === 'supported' || f.supportStatus === 'partially_supported');
     let unsupportedFindings = findings.filter(f => f.supportStatus === 'unsupported' || f.supportStatus === 'conflicting');
     
+    const unsupportedIssues = unsupportedFindings.map(f => f.findingText);
+
+    // Deep mode: identify supported findings lacking multiple sources
+    if (config.requireMultipleSources) {
+      for (const f of supportedFindings) {
+        if (!f.sourceReferences || f.sourceReferences.length < 2) {
+          unsupportedIssues.push(`Insufficient multi-source support for finding: ${f.findingText}`);
+        }
+      }
+    }
+
     const outline = supportedFindings.map(f => ({
       heading: f.findingText,
       sources: f.sourceReferences
@@ -60,17 +82,12 @@ export class ResearchEngine {
       }
     }
     
-    const unsupportedIssues = unsupportedFindings.map(f => f.findingText);
-    
     // Explicitly do not fabricate unresolved elements. Add to unsupported issues instead.
     if (!targetAudience) {
       unsupportedIssues.push("Missing Target Audience");
     }
     if (!searchIntent) {
       unsupportedIssues.push("Missing Search Intent");
-    }
-    if (config.checkConflicts && unsupportedFindings.length > 0) {
-      // Config requires us to surface conflicts explicitly, already added to unsupportedIssues
     }
     
     const selectedSourceIds = limitedSources.map(s => s.id);
@@ -79,8 +96,8 @@ export class ResearchEngine {
     const briefData: Partial<ContentBrief> = {
       title: project.title,
       angle: project.objective,
-      targetAudience, // can be empty
-      searchIntent,   // can be empty
+      targetAudience, // can be empty string
+      searchIntent,   // can be empty string
       primaryObjective: project.objective,
       targetKeyword,
       outline,

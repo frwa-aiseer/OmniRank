@@ -59,11 +59,12 @@ export class ResearchRepository {
   }
 
   async updateQuestion(id: string, brandId: string, updates: Partial<{ status: ResearchQuestionStatus; questionText: string }>): Promise<ResearchQuestion> {
-    const { data, error } = await this.client.from("research_questions").update({
-      status: updates.status,
-      question_text: updates.questionText,
-      updated_at: new Date().toISOString()
-    }).eq("id", id).eq("brand_id", brandId).select().single();
+    const dbPayload: any = {};
+    if (updates.status !== undefined) dbPayload.status = updates.status;
+    if (updates.questionText !== undefined) dbPayload.question_text = updates.questionText;
+    dbPayload.updated_at = new Date().toISOString();
+
+    const { data, error } = await this.client.from("research_questions").update(dbPayload).eq("id", id).eq("brand_id", brandId).select().single();
     if (error) throw new Error(error.message);
     return this.mapQuestion(data);
   }
@@ -75,11 +76,28 @@ export class ResearchRepository {
     return data.map(this.mapSource);
   }
 
-  async addSource(projectId: string, brandId: string, orgId: string, classification: ResearchSourceClassification, title: string, url?: string): Promise<ResearchSource> {
-    const { data, error } = await this.client.from("research_sources").insert({
+  async addSource(projectId: string, brandId: string, orgId: string, payload: any): Promise<ResearchSource> {
+    const dbPayload = {
       project_id: projectId, brand_id: brandId, organization_id: orgId,
-      classification, title, url, trust_classification: 'unverified'
-    }).select().single();
+      classification: payload.classification,
+      title: payload.title,
+      url: payload.url,
+      publisher: payload.publisher,
+      publication_date: payload.publicationDate,
+      trust_classification: payload.trustClassification || 'unverified',
+      extracted_text: payload.extractedText,
+      metadata: payload.metadata || {},
+      knowledge_source_id: payload.knowledgeSourceId,
+      knowledge_document_id: payload.knowledgeDocumentId,
+      knowledge_chunk_id: payload.knowledgeChunkId,
+      evidence_source_id: payload.evidenceSourceId,
+      evidence_claim_id: payload.evidenceClaimId
+    };
+
+    // Clean undefined fields to avoid overriding with nulls incorrectly
+    Object.keys(dbPayload).forEach(k => (dbPayload as any)[k] === undefined && delete (dbPayload as any)[k]);
+
+    const { data, error } = await this.client.from("research_sources").insert(dbPayload).select().single();
     if (error) throw new Error(error.message);
     return this.mapSource(data);
   }
@@ -116,17 +134,37 @@ export class ResearchRepository {
   }
 
   async saveBrief(projectId: string, brandId: string, orgId: string, briefData: Partial<ContentBrief>): Promise<ContentBrief> {
-    // Upsert equivalent since project_id is unique
+    const dbPayload: any = {
+      title: briefData.title,
+      angle: briefData.angle,
+      target_audience: briefData.targetAudience,
+      search_intent: briefData.searchIntent,
+      primary_objective: briefData.primaryObjective,
+      target_keyword: briefData.targetKeyword,
+      supporting_keywords: briefData.supportingKeywords,
+      cta: briefData.cta,
+      outline: briefData.outline,
+      proposed_tables: briefData.proposedTables,
+      proposed_visuals: briefData.proposedVisuals,
+      faq_ideas: briefData.faqIdeas,
+      source_selections: briefData.sourceSelections,
+      unsupported_issues: briefData.unsupportedIssues,
+      notes: briefData.notes,
+      status: briefData.status,
+      created_by: briefData.createdBy,
+      updated_at: new Date().toISOString()
+    };
+    
+    Object.keys(dbPayload).forEach(k => dbPayload[k] === undefined && delete dbPayload[k]);
+
     const { data: existing } = await this.client.from("content_briefs").select("id").eq("project_id", projectId).eq("brand_id", brandId).maybeSingle();
     
     let result;
     if (existing) {
-      result = await this.client.from("content_briefs").update({
-        ...briefData, updated_at: new Date().toISOString()
-      }).eq("id", existing.id).select().single();
+      result = await this.client.from("content_briefs").update(dbPayload).eq("id", existing.id).select().single();
     } else {
       result = await this.client.from("content_briefs").insert({
-        ...briefData, project_id: projectId, brand_id: brandId, organization_id: orgId
+        ...dbPayload, project_id: projectId, brand_id: brandId, organization_id: orgId
       }).select().single();
     }
     
