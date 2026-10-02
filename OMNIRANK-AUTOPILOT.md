@@ -21,13 +21,22 @@ The original omnirank-prompts.json remains the product-history roadmap. The v2 p
 
 Use this exact instruction:
 
-> Run OMNIRANK-AUTOPILOT from the current main branch. Follow AGENTS.md and omnirank-prompts-v2.json. Start at the first incomplete phase. Execute phases sequentially without waiting for me between passing phases. Before each phase, inspect only the real dependency schema/types/routes named by that phase, build a private acceptance checklist, then implement the full vertical slice DB → authorization → types → service/repository → API → UI → behavioral tests. Self-audit the runtime contract before committing. Run focused tests, then lint/test/build once per phase. Remove temporary scripts. Commit and push each passing phase separately. Continue automatically to the next phase. Stop only for a hard blocker that cannot be safely resolved or mocked. Missing third-party credentials are not a hard blocker: implement the adapter, deterministic mocks and contract tests, record live verification pending, and continue. Do not start Beta features.
+> Run OMNIRANK-AUTOPILOT from the current main branch. Follow AGENTS.md, docs/CREDENTIALS-REQUIRED.md and omnirank-prompts-v2.json. FIRST run the credential preflight and do not start implementation until every required credential group passes its live check. Never print or commit secret values. Then start at the first incomplete phase and execute phases sequentially without waiting for me between passing phases. Before each phase, inspect the real dependency schema/types/routes named by that phase, build a private acceptance checklist, and implement the full vertical slice DB → authorization → types → service/repository → API → UI → behavioral tests → live integration verification. Self-audit before committing. Run focused tests, then lint/test/build once per phase. Remove temporary scripts. Commit and push each passing phase separately and continue automatically. A required credential or required live integration failure is a hard blocker. Mocks remain mandatory for tests but do not count as completion of required live integrations. Do not start Beta features.
 
 ---
 
 ## Autonomous algorithm
 
-For each phase in `omnirank-prompts-v2.json`:
+## Credential preflight
+
+Before all implementation:
+- Read `docs/CREDENTIALS-REQUIRED.md`.
+- Confirm required secrets exist without printing values.
+- Run the safe live validation for Supabase, Cloudflare/R2/AI Gateway, WordPress staging, GSC, GA4, Stripe TEST, Inngest, primary AI route, fallback AI route and Resend/email when required.
+- Record only PASS/FAIL plus non-secret identifiers.
+- If any required group fails, STOP. Do not begin OR-R00.
+
+For each phase in `omnirank-prompts-v2.json` after credential preflight passes:
 
 1. **Locate phase**
    - Find the first phase without a passing phase commit / completion evidence.
@@ -88,9 +97,14 @@ For each phase in `omnirank-prompts-v2.json`:
    - push to main
    - record SHA and test count
 
-9. **Continue**
-   - if PASS or only EXTERNAL-LIVE-PENDING → immediately start next phase
-   - if HARD-BLOCKER → stop and report exactly one blocker with evidence
+9. **Live acceptance**
+   - Run the real test/staging integration path for any external service required by the phase.
+   - Mocks supplement the suite but cannot replace the live acceptance check.
+   - Do not mark PASS while a required live check is pending.
+
+10. **Continue**
+   - if PASS → immediately start next phase
+   - if a credential/live check or another HARD-BLOCKER fails → stop and report the blocker with evidence
 
 ---
 
@@ -115,19 +129,14 @@ Otherwise:
 
 ## External integration rule
 
-WordPress, GSC, GA4, Stripe, Inngest and live AI providers may lack credentials during implementation.
+All required external credentials must be configured before autonomous Alpha implementation starts. The exact groups and live checks are defined in `docs/CREDENTIALS-REQUIRED.md`.
 
-That must not stop Alpha code completion.
-
-For each missing external credential:
-1. implement real adapter/interface
-2. validate required env vars
-3. add deterministic mock/fixture
-4. add contract/integration tests
-5. keep production path disabled until credentials exist
-6. record the exact live check pending
-
-Never fabricate a successful external connection.
+1. Use real TEST/STAGING/SANDBOX credentials where supported.
+2. Never print, commit or log secrets.
+3. Keep deterministic mocks for repeatable tests.
+4. Also run the real live integration check.
+5. If the live check fails, the dependent phase is not complete and the autopilot stops.
+6. No required Alpha integration may remain live-verification-pending.
 
 ---
 
@@ -157,7 +166,8 @@ After the autonomous run, return only:
 - Commit SHA per phase
 - Test count per phase
 - Supabase migrations created/deployed
-- External-live-pending checks
+- Credential preflight result
+- Live integration verification result per integration-dependent phase
 - Hard blockers
 - Path to `docs/ALPHA-READINESS.md` if P13 completed
 
