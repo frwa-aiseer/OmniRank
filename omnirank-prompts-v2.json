@@ -1,0 +1,504 @@
+{
+  "name": "OmniRank Execution-Ready Alpha Prompt Pack",
+  "version": "2.0",
+  "supersedesExecutionOf": "omnirank-prompts.json",
+  "preservesProductScopeFrom": [
+    "omnirank-prompts.json",
+    "OmniRank Project Context & Background.md",
+    "OmniRank Strategy Plan.txt"
+  ],
+  "executionMode": "autonomous-sequential",
+  "objective": "Complete the OmniRank Alpha implementation with fewer audit/fix loops by requiring schema discovery, vertical implementation, behavioral tests, self-audit, and completion gates inside every phase.",
+  "stopRules": {
+    "stopOnHardBlockerOnly": true,
+    "continueOnMissingExternalCredentials": true,
+    "neverStartBetaFeatures": true,
+    "noUserPauseBetweenPassingPhases": true
+  },
+  "globalExecutionContract": {
+    "sourceOfTruth": "Current repository plus deployed Supabase schema",
+    "rulesFile": "AGENTS.md",
+    "autopilotFile": "OMNIRANK-AUTOPILOT.md",
+    "beforeEveryPhase": [
+      "Read the current phase requirements.",
+      "Inspect only named dependency files and actual migrations/types/routes used by that phase.",
+      "Resolve real database tables and columns before writing queries.",
+      "Build a private requirement-to-code checklist.",
+      "Identify existing implementation to extend instead of duplicate."
+    ],
+    "implementationOrder": [
+      "database/schema/RLS/RPC",
+      "types",
+      "repository/service",
+      "authenticated API",
+      "UI/action wiring",
+      "behavioral and negative tests",
+      "cleanup",
+      "full lint/test/build once",
+      "self-audit against acceptance matrix",
+      "commit and push"
+    ],
+    "doneGate": [
+      "Every acceptance item is PASS or explicitly external-live-pending.",
+      "No known runtime blocker.",
+      "No fake IDs, fake sources, fake metrics, placeholder factual conclusions or dead UI controls.",
+      "All DB field mappings match actual schema.",
+      "Focused tests pass.",
+      "Full lint, test and build pass.",
+      "Temporary helper scripts are removed."
+    ]
+  },
+  "phases": [
+    {
+      "code": "OR-R00",
+      "title": "Alpha Requirements Reconciliation",
+      "purpose": "Prevent scope loss by reconciling the original prompt pack and product objectives with the actual repository before continuing.",
+      "scope": [
+        "Read omnirank-prompts.json, AGENTS.md, current migrations and main feature routes/types for P01-P07.",
+        "Create docs/alpha-requirements-matrix.json with one row per original requirement and status: implemented, partial, missing, deferred-by-product-decision, external-live-pending.",
+        "Do not reopen already-working architecture unless a missing item is required for the Alpha loop or for P08-P13 dependencies.",
+        "Create docs/alpha-gap-summary.md listing only alpha-critical missing items and the phase that will close each one.",
+        "Do not implement Beta/deferred items."
+      ],
+      "acceptance": [
+        "Every P01-P07 original prompt requirement is represented once in the matrix.",
+        "Every gap is assigned to OR-P07C, P08, P09, P10, P11, P12 or P13.",
+        "No duplicate competing implementation is proposed."
+      ],
+      "tests": [
+        "Validate JSON schema/parseability of the requirements matrix."
+      ],
+      "commit": "docs(alpha): reconcile roadmap requirements before remaining phases"
+    },
+    {
+      "code": "OR-P07C",
+      "title": "Research Engine Final Closure",
+      "dependsOn": [
+        "OR-R00"
+      ],
+      "scope": [
+        "Finish only remaining OR-P07 runtime defects.",
+        "Use exact existing schema columns for brand_profiles, brand_products, brand_audiences, brand_policies, brand_competitors, knowledge_sources, knowledge_documents, knowledge_chunks, evidence_sources, evidence_claims and articles.",
+        "Research modes must have observable behavior: Fast filters external/search-result/competitor/weak sources when configured; Standard surfaces conflicts; Deep enforces multi-source expectations.",
+        "Search intent must remain unresolved unless supported by actual research/opportunity evidence.",
+        "Reviewer brief transitions must be explicit and final states protected.",
+        "Remove temporary fix scripts.",
+        "Migration 00013 must remain clean and undeployed until phase code passes."
+      ],
+      "schemaContract": {
+        "knowledge_sources": [
+          "id",
+          "name",
+          "type",
+          "source_url",
+          "trust_level",
+          "status",
+          "brand_id",
+          "organization_id"
+        ],
+        "knowledge_documents": [
+          "id",
+          "title",
+          "url",
+          "file_type",
+          "parsing_status",
+          "trust_level",
+          "classification",
+          "brand_id",
+          "source_id",
+          "organization_id"
+        ],
+        "knowledge_chunks": [
+          "id",
+          "content",
+          "brand_id",
+          "document_id",
+          "source_id"
+        ],
+        "evidence_sources": [
+          "id",
+          "name",
+          "url",
+          "publisher",
+          "publication_date",
+          "trust_score",
+          "is_primary_source",
+          "brand_id",
+          "organization_id"
+        ],
+        "evidence_claims": [
+          "id",
+          "claim_text",
+          "verification_status",
+          "brand_id",
+          "organization_id"
+        ],
+        "articles": [
+          "id",
+          "title",
+          "status",
+          "brand_id",
+          "organization_id"
+        ]
+      },
+      "acceptance": [
+        "All ResearchEngine SELECT fields exist in actual schema.",
+        "Prepare Brief works with correct camelCase↔snake_case mapping.",
+        "Brand-scoped context queries fail closed.",
+        "Fast/Standard/Deep behavior is covered by behavioral tests.",
+        "Reviewer cannot approve/reject or demote finalized briefs.",
+        "No temporary helper scripts remain."
+      ],
+      "tests": [
+        "Mocked tests must assert exact SELECT contracts for every context table.",
+        "Behavioral tests for mode filtering, DB failures and review transitions."
+      ],
+      "afterPass": "Commit/push. Do not deploy 00013 from Antigravity unless the autonomous runner has explicit Supabase deployment credentials and authorization; otherwise mark deployment pending and continue."
+    },
+    {
+      "code": "OR-P08",
+      "title": "OmniRouter and Content Generation",
+      "dependsOn": [
+        "OR-P07C"
+      ],
+      "objective": "Add provider-neutral AI execution and turn an approved/reviewed Content Brief into validated structured article blocks without coupling OmniRank to one model vendor.",
+      "preflight": [
+        "Inspect actual article schema/types/validator/editor, content_briefs/research APIs, brand/evidence schema and current environment conventions.",
+        "Resolve the exact canonical article envelope and supported block types from current code before generating anything.",
+        "Do not name providers in product-facing task contracts."
+      ],
+      "dataModel": [
+        "Create forward migration with ai_tasks, ai_models, ai_routing_policies and ai_usage_events.",
+        "ai_tasks stores task code, org/brand/user/article/research references, requested quality/cost/privacy constraints, status, attempt count, timestamps and error metadata.",
+        "ai_models is operational inventory/config metadata, not secrets.",
+        "ai_routing_policies maps task codes and constraints to model tiers/capabilities.",
+        "ai_usage_events records provider/model, input/output/cache tokens where available, latency, estimated/actual cost, task id and outcome."
+      ],
+      "router": [
+        "Create OmniRouter interface that accepts taskCode, structured input, quality tier, max cost, timeout, required output schema and privacy constraints.",
+        "Provider-specific adapters live only under the routing layer.",
+        "Implement deterministic mock adapter for tests/development.",
+        "Implement environment-configured adapter boundary for Cloudflare AI Gateway/OpenRouter/direct providers without hard-coding one as product truth.",
+        "Support timeout, retry/fallback policy, structured JSON validation and usage recording.",
+        "No API keys in browser responses, DB rows exposed to clients, logs or prompts."
+      ],
+      "taskCodes": [
+        "BRAND_EXTRACTION",
+        "CLASSIFICATION",
+        "KEYWORD_CLUSTERING",
+        "RESEARCH_SYNTHESIS",
+        "CONTENT_BRIEF_ASSIST",
+        "ARTICLE_DRAFT",
+        "BLOCK_REWRITE",
+        "FACT_CHECK",
+        "SEO_REVIEW",
+        "GEO_REVIEW",
+        "BRAND_REVIEW"
+      ],
+      "generation": [
+        "ARTICLE_DRAFT consumes an existing Research Project/Content Brief and only the relevant retrieved Brand Brain/policy/evidence/knowledge context.",
+        "Generate the current canonical structured article JSON, never canonical HTML.",
+        "Every generated block receives stable ID, origin/provenance and source/evidence refs where applicable.",
+        "Run the existing Article schema validator before persistence.",
+        "Persist as working document and create immutable milestone version where appropriate.",
+        "BLOCK_REWRITE may replace only the requested block/version context and must not overwrite unrelated user-edited blocks.",
+        "Do not silently invent citations/statistics/evidence. Unsupported claims remain marked or omitted."
+      ],
+      "apiUi": [
+        "Authenticated endpoints for article draft generation, task status, block rewrite and safe retry.",
+        "Wire Content Studio AI actions to the real endpoints.",
+        "Show provider-neutral states such as Fast/Standard/High quality, not model names.",
+        "Expose task failure and retry without losing the user's article."
+      ],
+      "acceptance": [
+        "No feature code outside adapters directly calls a provider SDK.",
+        "Structured outputs are schema validated before persistence.",
+        "Usage/cost/latency is recorded for every completed/failed AI task attempt.",
+        "One-block rewrite preserves all other blocks byte-for-byte/structurally unchanged.",
+        "Foreign-brand research/article references are rejected.",
+        "No source/evidence fabrication.",
+        "Missing live AI credentials uses deterministic mock adapter and marks external-live verification pending instead of blocking the phase."
+      ],
+      "tests": [
+        "Router selection and fallback.",
+        "timeout/error fail-closed.",
+        "structured-output validation.",
+        "usage event recording.",
+        "foreign-tenant rejection.",
+        "article draft contract.",
+        "single-block rewrite preservation.",
+        "no fabricated citations/statistics.",
+        "provider names absent from normal feature contracts."
+      ],
+      "commit": "feat(ai): implement OR-P08 OmniRouter and structured generation"
+    },
+    {
+      "code": "OR-P09",
+      "title": "Quality, Review and Versioning",
+      "dependsOn": [
+        "OR-P08"
+      ],
+      "objective": "Implement the enforceable Verify → Optimize → Approve layer, binding approval to an immutable version and preventing policy/evidence violations from publishing.",
+      "preflight": [
+        "Inspect actual article status enum, article_versions/review RPCs, Brand Policies, evidence model and current editor review panels.",
+        "Extend existing review/versioning instead of creating parallel approval systems."
+      ],
+      "dataModel": [
+        "Add SEO/GEO/brand/evidence audit records, internal_link_suggestions, content_reviews, review_comments and approval_requirements using forward migration.",
+        "Preserve audit history; no destructive overwrite of completed audits/reviews."
+      ],
+      "workflow": [
+        "Support lifecycle needed for Alpha: idea/researching/brief/drafting/ai_review/human_review/approved/scheduled/published/monitoring/refresh_recommended/archived, adapting existing enum through safe migration if necessary.",
+        "Approval must reference exact article_version_id.",
+        "Any post-approval content edit creates/identifies a new unapproved version and prevents publishing it until approved.",
+        "Reviewer/Strategist/Admin authority follows existing role model.",
+        "Optional separation-of-duties setting prevents author self-approval when enabled."
+      ],
+      "gates": [
+        "Blocking Brand Policies block approval/publish.",
+        "Statistics/citations requiring evidence must resolve to permitted same-brand evidence/source records.",
+        "Unsupported claims are visible and can block according to policy.",
+        "SEO/GEO/brand/evidence checks return actionable findings, not only opaque scores.",
+        "Internal link suggestions include destination, anchor, reason and location."
+      ],
+      "acceptance": [
+        "Exact-version approval is DB-authoritative.",
+        "Editing after approval invalidates approval for the new content version.",
+        "Blocking policy violation cannot be bypassed by direct client update.",
+        "Reviewer/Writer/Strategist permissions enforced at DB/API level.",
+        "Quality panel in Content Studio uses real audit data."
+      ],
+      "tests": [
+        "exact-version approval.",
+        "post-approval edit invalidation.",
+        "blocking policy.",
+        "unsupported statistic/evidence.",
+        "self-approval restriction.",
+        "role boundaries.",
+        "audit immutability.",
+        "internal-link suggestion contract."
+      ],
+      "commit": "feat(review): implement OR-P09 quality gates and exact-version approval"
+    },
+    {
+      "code": "OR-P10",
+      "title": "WordPress Publishing",
+      "dependsOn": [
+        "OR-P09"
+      ],
+      "objective": "Publish only an approved exact article version to WordPress through a secure, idempotent integration while keeping structured JSON canonical.",
+      "preflight": [
+        "Inspect actual article block schema and approved-version contract before writing renderer.",
+        "Create CMS adapter interface so WordPress is first implementation, not permanent architecture."
+      ],
+      "dataModel": [
+        "Create integrations, protected credential references, cms_content_mappings and publishing_jobs if not already present.",
+        "Store only credential references/metadata in normal tables; secrets remain server-side encrypted/Vault/Workers Secrets."
+      ],
+      "wordpress": [
+        "Connection test.",
+        "Read mapped posts.",
+        "Create/update draft.",
+        "Upload media.",
+        "Schedule.",
+        "Publish.",
+        "Update an existing OmniRank-managed post.",
+        "Retrieve/store published URL and remote post id."
+      ],
+      "renderer": [
+        "Render sanitized WordPress-compatible HTML from the exact approved canonical structured version.",
+        "Support every Alpha block type currently in Article schema.",
+        "Never make returned WordPress HTML canonical article truth.",
+        "Reject unsafe URLs/HTML/scripts."
+      ],
+      "reliability": [
+        "Publishing job idempotency key prevents duplicate posts on retry/concurrency.",
+        "Retries operate on existing cms mapping.",
+        "Publishing verifies approval still refers to the version being published."
+      ],
+      "acceptance": [
+        "No credential returned to browser/AI/logs.",
+        "Unapproved/wrong-version publish denied.",
+        "Retry cannot create duplicate post.",
+        "Renderer fixtures cover all supported blocks.",
+        "If WordPress credentials are unavailable, adapter contract + mock server tests pass and live WordPress verification is marked external-live-pending."
+      ],
+      "tests": [
+        "credential redaction.",
+        "approved-version gate.",
+        "renderer snapshot/semantic tests for all block types.",
+        "create vs update mapping.",
+        "retry/concurrency idempotency.",
+        "WordPress error handling."
+      ],
+      "commit": "feat(publish): implement OR-P10 WordPress publishing"
+    },
+    {
+      "code": "OR-P11",
+      "title": "Growth Brain with GSC and GA4",
+      "dependsOn": [
+        "OR-P10"
+      ],
+      "objective": "Synchronize search/analytics data into local daily facts and convert it into explainable Growth Brain recommendations instead of querying Google on every screen load.",
+      "preflight": [
+        "Inspect websites/articles/opportunities and current integration conventions.",
+        "Normalize URL/article mapping rules before recommendation logic."
+      ],
+      "dataModel": [
+        "Create gsc_query_daily, gsc_page_daily, gsc_page_query_daily, ga4_landing_page_daily, content_performance_snapshots, content_health_assessments and growth_recommendations.",
+        "Unique keys make daily sync upserts idempotent."
+      ],
+      "integrations": [
+        "Provider interfaces for GSC and GA4 with OAuth credential references.",
+        "Sync by date range with pagination, checkpointing and retry.",
+        "Persist local daily data; dashboards read local tables."
+      ],
+      "analysis": [
+        "Growing/declining content.",
+        "High-impression low-CTR.",
+        "Ranking-near-win opportunities.",
+        "Stale content.",
+        "Content conflicts/cannibalization signals from available data.",
+        "Conversion winners.",
+        "Convert meaningful findings into explainable Opportunity/Growth recommendations with source metrics and dates."
+      ],
+      "ui": [
+        "Growth Overview.",
+        "Content Health.",
+        "Search Queries.",
+        "Basic Topic Map.",
+        "Recommendation-first wording."
+      ],
+      "acceptance": [
+        "No dashboard-time dependency on live Google APIs.",
+        "Daily sync is idempotent.",
+        "Every recommendation retains metrics/date-window rationale.",
+        "No fabricated analytics.",
+        "Missing Google credentials uses fixtures/mocks and marks live verification pending."
+      ],
+      "tests": [
+        "sync pagination/upsert.",
+        "date-window correctness.",
+        "URL/article mapping.",
+        "decline/growth/CTR/ranking detectors.",
+        "recommendation provenance.",
+        "cross-brand isolation.",
+        "Google API failure/retry."
+      ],
+      "commit": "feat(growth): implement OR-P11 GSC GA4 Growth Brain"
+    },
+    {
+      "code": "OR-P12",
+      "title": "Automations, Billing and Cost Controls",
+      "dependsOn": [
+        "OR-P11"
+      ],
+      "objective": "Add safe Manual/Copilot/Autopilot orchestration, customer entitlements and internal cost accounting without allowing client-side bypass.",
+      "dataModel": [
+        "Create automations, automation_runs, workflow_runs, workflow_steps.",
+        "Create plans, subscriptions and customer usage_events if absent.",
+        "Reuse P08 ai_usage_events as internal AI cost ledger; do not merge customer credits with token accounting."
+      ],
+      "automation": [
+        "Inngest adapter/interface with deterministic local runner fallback.",
+        "Templates: Content Decay Watch, CTR Opportunity Watch, Internal Link Watch, Weekly Opportunity Report, Auto-Publish Approved Content.",
+        "Manual, Copilot and opt-in brand-scoped Autopilot.",
+        "Approval rules, confidence thresholds, max actions/day, exclusions and notification hooks.",
+        "Every automated action creates auditable workflow/run records."
+      ],
+      "billing": [
+        "Customer-facing unit is Article Run, not tokens.",
+        "Server-side entitlement checks gate expensive actions and automation.",
+        "Local plan logic is tested before Stripe integration.",
+        "Stripe adapter handles subscription sync/webhooks idempotently when credentials exist.",
+        "No browser-supplied entitlement/plan value is trusted."
+      ],
+      "cost": [
+        "Views/queries for AI cost per article, customer, provider/model and feature.",
+        "Track revenue/usage separately from provider cost."
+      ],
+      "acceptance": [
+        "Autopilot cannot bypass approval/policy/publish gates.",
+        "Rate/action limits enforced server-side.",
+        "Webhook/retry idempotency.",
+        "Client cannot forge entitlement.",
+        "Missing Inngest/Stripe credentials does not block code completion; live checks marked pending."
+      ],
+      "tests": [
+        "automation policy gates.",
+        "max-actions limit.",
+        "workflow retry/idempotency.",
+        "entitlement bypass attempts.",
+        "Article Run accounting.",
+        "Stripe webhook replay.",
+        "cost ledger aggregation."
+      ],
+      "commit": "feat(automation): implement OR-P12 workflows billing and cost controls"
+    },
+    {
+      "code": "OR-P13",
+      "title": "Security Hardening and Alpha Acceptance",
+      "dependsOn": [
+        "OR-P12"
+      ],
+      "objective": "Close the Alpha loop and prove tenant isolation, safety, reliability, cost observability and the end-to-end user journey without adding major new features.",
+      "reconciliation": [
+        "Re-open docs/alpha-requirements-matrix.json from OR-R00.",
+        "Update every original P01-P12 requirement to final status.",
+        "Implement any remaining alpha-critical missing item that blocks the full loop.",
+        "Do not implement Beta/deferred items."
+      ],
+      "security": [
+        "Dual-user/two-tenant RLS tests across critical tables/RPCs.",
+        "Role boundary tests.",
+        "secret exposure scan.",
+        "prompt-injection/untrusted-content tests.",
+        "private-file access tests where implemented.",
+        "append-only audit integrity.",
+        "cross-brand RAG/research isolation.",
+        "approval/version bypass tests.",
+        "automation/entitlement bypass tests.",
+        "publishing duplicate/retry tests."
+      ],
+      "e2e": [
+        "signup/auth fixture → organization/brand/website",
+        "Brand Brain data/ingestion fixture",
+        "Opportunity creation",
+        "Research Project and evidence-backed Brief",
+        "OmniRouter structured article generation",
+        "Quality gates",
+        "human review and exact-version approval",
+        "WordPress adapter publish (live if credentials, deterministic integration fixture otherwise)",
+        "GSC/GA4 sync (live if credentials, fixtures otherwise)",
+        "Growth Brain next recommendation"
+      ],
+      "metrics": [
+        "workflow failures",
+        "retrieval relevance sample checks",
+        "generation latency",
+        "DB performance sanity",
+        "AI cost/Article Run from usage ledger"
+      ],
+      "outputs": [
+        "docs/ALPHA-READINESS.md",
+        "docs/alpha-requirements-matrix.json updated",
+        "clear list of only true external-live-pending checks"
+      ],
+      "acceptance": [
+        "All alpha-critical requirements PASS.",
+        "No known cross-tenant leak.",
+        "No known approval/publishing bypass.",
+        "No duplicate-publish path under retry.",
+        "End-to-end Alpha journey passes with live integrations or deterministic contract fixtures.",
+        "No Beta feature started."
+      ],
+      "tests": [
+        "Full lint/test/build.",
+        "Alpha E2E suite.",
+        "Security/tenant matrix.",
+        "Integration contract suites."
+      ],
+      "commit": "test(alpha): complete OR-P13 security and Alpha acceptance"
+    }
+  ]
+}
