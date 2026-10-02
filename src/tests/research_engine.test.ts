@@ -90,4 +90,10 @@ describe("OR-P07-FINAL — Runtime Completion Only", () => {
     expect(engineCode).toContain("Missing Target Audience");
     expect(engineCode).toContain("Missing Search Intent");
   });
+  it("Reviewer attempts review -> draft are denied", () => {
+    expect(sql).toContain("IF v_brief.status = 'review' AND p_status = 'draft' THEN");
+    expect(sql).toContain("RAISE EXCEPTION 'Reviewer cannot move review to draft';");
+  });
+
 });
+

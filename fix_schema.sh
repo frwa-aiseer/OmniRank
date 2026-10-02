@@ -482,15 +482,19 @@ BEGIN
     RAISE EXCEPTION 'Forbidden: Not authorized to review briefs';
   END IF;
 
-  -- Reviewer cannot de-finalize approved/rejected brief
-  IF v_brief.status IN ('approved', 'rejected') AND (v_brand_role NOT IN ('strategist') AND v_org_role NOT IN ('owner', 'admin')) THEN
-    RAISE EXCEPTION 'Reviewer cannot de-finalize approved/rejected Brief';
-  END IF;
-
-  -- Reviewer cannot set status to approved/rejected
-  IF p_status IN ('approved', 'rejected') THEN
-    IF (v_brand_role IS NULL OR v_brand_role NOT IN ('strategist')) AND (v_org_role IS NULL OR v_org_role NOT IN ('owner', 'admin')) THEN
+  -- Reviewer transition logic
+  IF (v_brand_role IS NULL OR v_brand_role NOT IN ('strategist')) AND (v_org_role IS NULL OR v_org_role NOT IN ('owner', 'admin')) THEN
+    -- If already finalized, freeze
+    IF v_brief.status IN ('approved', 'rejected') THEN
+      RAISE EXCEPTION 'Reviewer cannot de-finalize approved/rejected Brief';
+    END IF;
+    -- Cannot move to approved/rejected
+    IF p_status IN ('approved', 'rejected') THEN
       RAISE EXCEPTION 'Forbidden: Only strategist or admin can approve/reject briefs';
+    END IF;
+    -- Cannot move to draft from review
+    IF v_brief.status = 'review' AND p_status = 'draft' THEN
+      RAISE EXCEPTION 'Reviewer cannot move review to draft';
     END IF;
   END IF;
 
