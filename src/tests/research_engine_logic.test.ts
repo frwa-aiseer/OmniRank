@@ -124,4 +124,24 @@ describe("OR-P07-RUNTIME-GATE — Schema + Mode Logic", () => {
     const saveArgs = mockRepo.saveBrief.mock.calls[0][3];
     expect(saveArgs.unsupportedIssues).toContain("Insufficient multi-source support for finding: I am supported by 1 source");
   });
+  it("knowledge, evidence, and articles request exact columns", async () => {
+    const client = createMockClient();
+    const engine = new ResearchEngine(client);
+    mockRepo.getProject.mockResolvedValue({ id: "p1", mode: "standard" });
+    mockRepo.listFindings.mockResolvedValue([]);
+    mockRepo.listQuestions.mockResolvedValue([]);
+    mockRepo.listSources.mockResolvedValue([]);
+    await engine.prepareBrief("p1", "b1", "o1");
+    expect(client.from).toHaveBeenCalledWith("knowledge_sources");
+    expect(client.from("knowledge_sources").select).toHaveBeenCalledWith("id, name, type, source_url, trust_level, status");
+    expect(client.from).toHaveBeenCalledWith("knowledge_documents");
+    expect(client.from("knowledge_documents").select).toHaveBeenCalledWith("id, title, url, file_type, parsing_status, trust_level, classification");
+    expect(client.from).toHaveBeenCalledWith("evidence_sources");
+    expect(client.from("evidence_sources").select).toHaveBeenCalledWith("id, name, url, publisher, publication_date, trust_score, is_primary_source");
+    expect(client.from).toHaveBeenCalledWith("evidence_claims");
+    expect(client.from("evidence_claims").select).toHaveBeenCalledWith("id, claim_text, verification_status");
+    expect(client.from).toHaveBeenCalledWith("articles");
+    expect(client.from("articles").select).toHaveBeenCalledWith("id, title, status");
+  });
+
 });

@@ -25,10 +25,10 @@ export class ResearchEngine {
       this.client.from("brand_audiences").select("name, job_title, pain_points, goals, objections, preferred_channels, status").eq("brand_id", brandId),
       this.client.from("brand_policies").select("title, description, category, severity, enforcement_action, status").eq("brand_id", brandId),
       this.client.from("brand_competitors").select("name, domain, positioning, key_strengths, key_weaknesses, differentiator, notes, status").eq("brand_id", brandId),
-      this.client.from("knowledge_sources").select("id, title, url, status").eq("brand_id", brandId),
-      this.client.from("knowledge_documents").select("id, title, url, status").eq("brand_id", brandId),
+      this.client.from("knowledge_sources").select("id, name, type, source_url, trust_level, status").eq("brand_id", brandId),
+      this.client.from("knowledge_documents").select("id, title, url, file_type, parsing_status, trust_level, classification").eq("brand_id", brandId),
       this.client.from("knowledge_chunks").select("id, content").eq("brand_id", brandId),
-      this.client.from("evidence_sources").select("id, title, url, status").eq("brand_id", brandId),
+      this.client.from("evidence_sources").select("id, name, url, publisher, publication_date, trust_score, is_primary_source").eq("brand_id", brandId),
       this.client.from("evidence_claims").select("id, claim_text, verification_status").eq("brand_id", brandId),
       this.client.from("articles").select("id, title, status").eq("brand_id", brandId),
     ];
