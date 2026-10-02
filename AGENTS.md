@@ -110,19 +110,17 @@ Mocks must model the real schema and must fail when a nonexistent column is requ
 - Structured output must be validated before persistence.
 - AI output is a proposal, not authorization for publishing, billing, credentials, role changes or destructive actions.
 
-## 8. External integrations
+## 8. Credential gate and external integrations
 
-Missing third-party credentials must not cause the whole roadmap to stop.
+Do not start autonomous Alpha implementation until `docs/CREDENTIALS-REQUIRED.md` passes.
 
-When credentials are unavailable:
-- implement the production adapter/interface
-- implement environment validation
-- add deterministic mocks/fakes
-- add integration-contract tests
-- mark live external verification pending
-- continue to the next phase
-
-Do not fake a successful live connection.
+- Never commit, print, log, or expose secret values.
+- Use TEST/STAGING/SANDBOX credentials where available.
+- Validate each required integration with a narrow live check before its dependent phase.
+- Deterministic mocks are still required for tests, but mocks do not count as completion of a required live integration.
+- If a required credential is missing, invalid, insufficiently scoped, or the live check fails, stop before the dependent phase and report the exact non-secret requirement.
+- Required Alpha integrations may not be marked PASS with a live-verification-pending status.
+- Do not fake a successful live connection.
 
 ## 9. Definition of done for one phase
 
@@ -146,10 +144,11 @@ Do not commit a phase marked PASS if any acceptance item is known to be incomple
 ## 10. Autonomous sequencing
 
 When running under `OMNIRANK-AUTOPILOT.md`:
+- run the credential preflight first and do not start implementation until it passes;
 - after a phase passes, commit/push and immediately continue to the next pending phase;
 - do not wait for the user between phases;
-- stop only on a hard blocker that cannot be safely mocked or resolved from the repository;
-- record any external-live-verification items without stopping;
+- stop when a required credential/live integration fails or another hard blocker is reached;
+- never treat mocks as completion evidence for required live integrations;
 - never start Beta-only/deferred features.
 
 The final output after an autonomous run should contain only:
