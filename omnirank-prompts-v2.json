@@ -1,19 +1,21 @@
 {
   "name": "OmniRank Execution-Ready Alpha Prompt Pack",
-  "version": "2.0",
+  "version": "2.1",
   "supersedesExecutionOf": "omnirank-prompts.json",
   "preservesProductScopeFrom": [
     "omnirank-prompts.json",
     "OmniRank Project Context & Background.md",
     "OmniRank Strategy Plan.txt"
   ],
-  "executionMode": "autonomous-sequential",
+  "executionMode": "credential-gated-autonomous-sequential",
   "objective": "Complete the OmniRank Alpha implementation with fewer audit/fix loops by requiring schema discovery, vertical implementation, behavioral tests, self-audit, and completion gates inside every phase.",
   "stopRules": {
     "stopOnHardBlockerOnly": true,
-    "continueOnMissingExternalCredentials": true,
+    "continueOnMissingExternalCredentials": false,
     "neverStartBetaFeatures": true,
-    "noUserPauseBetweenPassingPhases": true
+    "noUserPauseBetweenPassingPhases": true,
+    "requireCredentialPreflight": true,
+    "requireLiveIntegrationForCompletion": true
   },
   "globalExecutionContract": {
     "sourceOfTruth": "Current repository plus deployed Supabase schema",
@@ -39,14 +41,16 @@
       "commit and push"
     ],
     "doneGate": [
-      "Every acceptance item is PASS or explicitly external-live-pending.",
+      "All credentials required by the current phase were validated live before implementation.",
       "No known runtime blocker.",
       "No fake IDs, fake sources, fake metrics, placeholder factual conclusions or dead UI controls.",
       "All DB field mappings match actual schema.",
       "Focused tests pass.",
       "Full lint, test and build pass.",
-      "Temporary helper scripts are removed."
-    ]
+      "Temporary helper scripts are removed.",
+      "Integration-dependent acceptance uses live test/staging services; mocks alone do not qualify as PASS."
+    ],
+    "credentialManifest": "docs/CREDENTIALS-REQUIRED.md"
   },
   "phases": [
     {
@@ -147,13 +151,14 @@
         "Brand-scoped context queries fail closed.",
         "Fast/Standard/Deep behavior is covered by behavioral tests.",
         "Reviewer cannot approve/reject or demote finalized briefs.",
-        "No temporary helper scripts remain."
+        "No temporary helper scripts remain.",
+        "Migration 00013 is deployed and live Research creation, provenance validation, role boundaries and Brief preparation pass against Supabase."
       ],
       "tests": [
         "Mocked tests must assert exact SELECT contracts for every context table.",
         "Behavioral tests for mode filtering, DB failures and review transitions."
       ],
-      "afterPass": "Commit/push. Do not deploy 00013 from Antigravity unless the autonomous runner has explicit Supabase deployment credentials and authorization; otherwise mark deployment pending and continue."
+      "afterPass": "Commit/push, deploy migration 00013 using validated Supabase credentials, run live Research/RLS/RPC/provenance/Brief verification, and only then mark OR-P07C PASS."
     },
     {
       "code": "OR-P08",
@@ -217,7 +222,7 @@
         "One-block rewrite preserves all other blocks byte-for-byte/structurally unchanged.",
         "Foreign-brand research/article references are rejected.",
         "No source/evidence fabrication.",
-        "Missing live AI credentials uses deterministic mock adapter and marks external-live verification pending instead of blocking the phase."
+        "Primary and fallback AI routes are live-tested through OmniRouter using configured credentials and usage/cost events are verified in the real database."
       ],
       "tests": [
         "Router selection and fallback.",
@@ -321,7 +326,7 @@
         "Unapproved/wrong-version publish denied.",
         "Retry cannot create duplicate post.",
         "Renderer fixtures cover all supported blocks.",
-        "If WordPress credentials are unavailable, adapter contract + mock server tests pass and live WordPress verification is marked external-live-pending."
+        "A staging/test WordPress connection is live-tested end-to-end: connection, draft create/update, media path, schedule/publish path, mapping and idempotent retry."
       ],
       "tests": [
         "credential redaction.",
@@ -374,7 +379,7 @@
         "Daily sync is idempotent.",
         "Every recommendation retains metrics/date-window rationale.",
         "No fabricated analytics.",
-        "Missing Google credentials uses fixtures/mocks and marks live verification pending."
+        "GSC and GA4 credentials are live-tested against the configured properties and at least one real sync window is persisted and analyzed."
       ],
       "tests": [
         "sync pagination/upsert.",
@@ -422,7 +427,9 @@
         "Rate/action limits enforced server-side.",
         "Webhook/retry idempotency.",
         "Client cannot forge entitlement.",
-        "Missing Inngest/Stripe credentials does not block code completion; live checks marked pending."
+        "Inngest live event execution is verified with configured keys.",
+        "Stripe TEST-mode subscription/webhook/entitlement flow is live-tested with configured keys and webhook secret.",
+        "Configured email notification path is live-tested where automation notifications are used."
       ],
       "tests": [
         "automation policy gates.",
@@ -482,15 +489,15 @@
       "outputs": [
         "docs/ALPHA-READINESS.md",
         "docs/alpha-requirements-matrix.json updated",
-        "clear list of only true external-live-pending checks"
+        "docs/ALPHA-READINESS.md contains zero required-live-integration pending items."
       ],
       "acceptance": [
         "All alpha-critical requirements PASS.",
         "No known cross-tenant leak.",
         "No known approval/publishing bypass.",
         "No duplicate-publish path under retry.",
-        "End-to-end Alpha journey passes with live integrations or deterministic contract fixtures.",
-        "No Beta feature started."
+        "No Beta feature started.",
+        "The Alpha end-to-end journey passes using configured live test/staging integrations; mocks supplement tests but do not replace live acceptance."
       ],
       "tests": [
         "Full lint/test/build.",
@@ -500,5 +507,22 @@
       ],
       "commit": "test(alpha): complete OR-P13 security and Alpha acceptance"
     }
-  ]
+  ],
+  "credentialGate": {
+    "code": "OR-C00",
+    "title": "Credential and Live Integration Preflight",
+    "mustPassBeforeAnyAutomation": true,
+    "requiredGroups": [
+      "Supabase deployment/runtime",
+      "Cloudflare/R2/AI Gateway",
+      "WordPress staging/test",
+      "Google OAuth + GSC + GA4",
+      "Stripe TEST mode",
+      "Inngest",
+      "Primary AI route and fallback AI route",
+      "Resend/email notification path when required"
+    ],
+    "source": "docs/CREDENTIALS-REQUIRED.md",
+    "onFailure": "STOP before OR-R00 and report the exact non-secret credential/scope/live-check failure."
+  }
 }
