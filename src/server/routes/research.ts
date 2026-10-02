@@ -20,189 +20,132 @@ async function resolveAuth(req: Request, brandId: string) {
   return { error: null, status: 200 as const, userId: ctx.userId };
 }
 
-// ------------------------------------------------------------------
-// PROJECTS
-// ------------------------------------------------------------------
+// ... PROJECTS ...
 researchRouter.get("/:brandId/projects", async (req: Request, res: Response) => {
-  const { brandId } = req.params;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const projects = await repo.getProjects(brandId);
-    res.json(projects);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).getProjects(req.params.brandId));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 researchRouter.post("/:brandId/projects", async (req: Request, res: Response) => {
-  const { brandId } = req.params;
-  const { title, objective, mode, orgId } = req.body;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const project = await repo.createManualProject(brandId, orgId, title, objective, mode);
-    res.json(project);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).createManualProject(req.params.brandId, req.body.orgId, req.body.title, req.body.objective, req.body.mode));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 researchRouter.get("/:brandId/projects/:id", async (req: Request, res: Response) => {
-  const { brandId, id } = req.params;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const project = await repo.getProject(id, brandId);
+    const repo = getResearchRepository(createScopedUserSupabaseClient(req.token));
+    const project = await repo.getProject(req.params.id, req.params.brandId);
     if (!project) return void res.status(404).json({ error: "Project not found" });
-    const brief = await repo.getBriefForProject(id, brandId);
-    res.json({ project, brief });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json({ project, brief: await repo.getBriefForProject(req.params.id, req.params.brandId) });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 researchRouter.post("/:brandId/handoff/:opportunityId", async (req: Request, res: Response) => {
-  const { brandId, opportunityId } = req.params;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const projectId = await repo.handoffOpportunity(opportunityId, brandId);
-    res.json({ projectId });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json({ projectId: await getResearchRepository(createScopedUserSupabaseClient(req.token)).handoffOpportunity(req.params.opportunityId, req.params.brandId) });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// ------------------------------------------------------------------
-// QUESTIONS
-// ------------------------------------------------------------------
+// ... QUESTIONS ...
 researchRouter.get("/:brandId/projects/:projectId/questions", async (req: Request, res: Response) => {
-  const { brandId, projectId } = req.params;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const questions = await repo.listQuestions(projectId, brandId);
-    res.json(questions);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).listQuestions(req.params.projectId, req.params.brandId));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 researchRouter.post("/:brandId/projects/:projectId/questions", async (req: Request, res: Response) => {
-  const { brandId, projectId } = req.params;
-  const { orgId, text } = req.body;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const question = await repo.addQuestion(projectId, brandId, orgId, text);
-    res.json(question);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).addQuestion(req.params.projectId, req.params.brandId, req.body.orgId, req.body.text));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// ------------------------------------------------------------------
-// SOURCES
-// ------------------------------------------------------------------
-researchRouter.get("/:brandId/projects/:projectId/sources", async (req: Request, res: Response) => {
-  const { brandId, projectId } = req.params;
-  const auth = await resolveAuth(req, brandId);
+researchRouter.put("/:brandId/projects/:projectId/questions/:id", async (req: Request, res: Response) => {
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const sources = await repo.listSources(projectId, brandId);
-    res.json(sources);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).updateQuestion(req.params.id, req.params.brandId, req.body));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// ... SOURCES ...
+researchRouter.get("/:brandId/projects/:projectId/sources", async (req: Request, res: Response) => {
+  const auth = await resolveAuth(req, req.params.brandId);
+  if (auth.error) return void res.status(auth.status).json({ error: auth.error });
+  try {
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).listSources(req.params.projectId, req.params.brandId));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 researchRouter.post("/:brandId/projects/:projectId/sources", async (req: Request, res: Response) => {
-  const { brandId, projectId } = req.params;
-  const { orgId, classification, title, url } = req.body;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const source = await repo.addSource(projectId, brandId, orgId, classification, title, url);
-    res.json(source);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).addSource(req.params.projectId, req.params.brandId, req.body.orgId, req.body.classification, req.body.title, req.body.url));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// ------------------------------------------------------------------
-// FINDINGS
-// ------------------------------------------------------------------
+// ... FINDINGS ...
 researchRouter.get("/:brandId/projects/:projectId/findings", async (req: Request, res: Response) => {
-  const { brandId, projectId } = req.params;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const findings = await repo.listFindings(projectId, brandId);
-    res.json(findings);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).listFindings(req.params.projectId, req.params.brandId));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
 researchRouter.post("/:brandId/projects/:projectId/findings", async (req: Request, res: Response) => {
-  const { brandId, projectId } = req.params;
-  const { orgId, text, questionId, sourceRefs } = req.body;
-  const auth = await resolveAuth(req, brandId);
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const repo = getResearchRepository(client);
-    const finding = await repo.addFinding(projectId, brandId, orgId, text, questionId, sourceRefs);
-    res.json(finding);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).addFinding(req.params.projectId, req.params.brandId, req.body.orgId, req.body.text, req.body.questionId, req.body.sourceRefs));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-// ------------------------------------------------------------------
-// BRIEF
-// ------------------------------------------------------------------
-researchRouter.post("/:brandId/projects/:projectId/brief/prepare", async (req: Request, res: Response) => {
-  const { brandId, projectId } = req.params;
-  const { orgId } = req.body;
-  const auth = await resolveAuth(req, brandId);
+researchRouter.post("/:brandId/projects/:projectId/findings/:id/review", async (req: Request, res: Response) => {
+  const auth = await resolveAuth(req, req.params.brandId);
   if (auth.error) return void res.status(auth.status).json({ error: auth.error });
-
   try {
-    const client = createScopedUserSupabaseClient(req.token);
-    const engine = getResearchEngine(client);
-    const brief = await engine.prepareBrief(projectId, brandId, orgId);
-    res.json(brief);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+    await getResearchRepository(createScopedUserSupabaseClient(req.token)).reviewFinding(req.params.id, req.params.brandId, req.body.supportStatus, req.body.confidenceScore, req.body.notes);
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+// ... BRIEF ...
+researchRouter.post("/:brandId/projects/:projectId/brief/prepare", async (req: Request, res: Response) => {
+  const auth = await resolveAuth(req, req.params.brandId);
+  if (auth.error) return void res.status(auth.status).json({ error: auth.error });
+  try {
+    res.json(await getResearchEngine(createScopedUserSupabaseClient(req.token)).prepareBrief(req.params.projectId, req.params.brandId, req.body.orgId));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+researchRouter.put("/:brandId/projects/:projectId/brief", async (req: Request, res: Response) => {
+  const auth = await resolveAuth(req, req.params.brandId);
+  if (auth.error) return void res.status(auth.status).json({ error: auth.error });
+  try {
+    res.json(await getResearchRepository(createScopedUserSupabaseClient(req.token)).saveBrief(req.params.projectId, req.params.brandId, req.body.orgId, req.body));
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
+});
+
+researchRouter.post("/:brandId/projects/:projectId/brief/:id/review", async (req: Request, res: Response) => {
+  const auth = await resolveAuth(req, req.params.brandId);
+  if (auth.error) return void res.status(auth.status).json({ error: auth.error });
+  try {
+    await getResearchRepository(createScopedUserSupabaseClient(req.token)).reviewBrief(req.params.id, req.body.status, req.body.notes);
+    res.json({ success: true });
+  } catch (err: any) { res.status(500).json({ error: err.message }); }
 });

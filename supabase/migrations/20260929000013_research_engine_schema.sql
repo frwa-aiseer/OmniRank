@@ -184,7 +184,6 @@ CREATE POLICY "content_briefs_writer_update" ON public.content_briefs FOR UPDATE
   USING (authz.has_brand_role(brand_id, ARRAY['writer']))
   WITH CHECK (authz.has_brand_role(brand_id, ARRAY['writer']));
 
-
 -- ============================================================================
 -- Tenant & Project Invariant Checks
 -- ============================================================================
@@ -227,20 +226,38 @@ BEGIN
     END IF;
 
     IF TG_TABLE_NAME = 'research_questions' THEN
-      -- No extra checks
+      -- Origin provenance constraints checked in writer restrictions for UPDATE
+      -- Base validations already applied
+      NULL;
     ELSIF TG_TABLE_NAME = 'research_sources' THEN
       -- Validate foreign provenance
       IF NEW.knowledge_source_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.knowledge_sources WHERE id=NEW.knowledge_source_id AND brand_id=NEW.brand_id) THEN
         RAISE EXCEPTION 'Foreign knowledge_source';
       END IF;
+      IF NEW.knowledge_document_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.knowledge_documents WHERE id=NEW.knowledge_document_id AND brand_id=NEW.brand_id) THEN
+        RAISE EXCEPTION 'Foreign knowledge_document';
+      END IF;
+      IF NEW.knowledge_chunk_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.knowledge_chunks WHERE id=NEW.knowledge_chunk_id AND brand_id=NEW.brand_id) THEN
+        RAISE EXCEPTION 'Foreign knowledge_chunk';
+      END IF;
+      
       IF NEW.evidence_source_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.evidence_sources WHERE id=NEW.evidence_source_id AND brand_id=NEW.brand_id) THEN
         RAISE EXCEPTION 'Foreign evidence_source';
       END IF;
       IF NEW.evidence_claim_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.evidence_claims WHERE id=NEW.evidence_claim_id AND brand_id=NEW.brand_id) THEN
         RAISE EXCEPTION 'Foreign evidence_claim';
       END IF;
-      IF NEW.knowledge_document_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.knowledge_documents WHERE id=NEW.knowledge_document_id AND (source_id=NEW.knowledge_source_id OR NEW.knowledge_source_id IS NULL)) THEN
-        RAISE EXCEPTION 'Foreign knowledge_document';
+
+      -- Check hierarchy consistency
+      IF NEW.knowledge_source_id IS NOT NULL AND NEW.knowledge_document_id IS NOT NULL THEN
+        IF NOT EXISTS(SELECT 1 FROM public.knowledge_documents WHERE id=NEW.knowledge_document_id AND source_id=NEW.knowledge_source_id) THEN
+          RAISE EXCEPTION 'Inconsistent knowledge_source and knowledge_document hierarchy';
+        END IF;
+      END IF;
+      IF NEW.knowledge_document_id IS NOT NULL AND NEW.knowledge_chunk_id IS NOT NULL THEN
+        IF NOT EXISTS(SELECT 1 FROM public.knowledge_chunks WHERE id=NEW.knowledge_chunk_id AND document_id=NEW.knowledge_document_id) THEN
+          RAISE EXCEPTION 'Inconsistent knowledge_document and knowledge_chunk hierarchy';
+        END IF;
       END IF;
 
     ELSIF TG_TABLE_NAME = 'research_findings' THEN
@@ -307,6 +324,18 @@ BEGIN
       IF TG_OP = 'UPDATE' AND (NEW.status IN ('completed', 'archived') OR OLD.status IN ('completed', 'archived')) THEN
         RAISE EXCEPTION 'Writer cannot archive or complete projects';
       END IF;
+    ELSIF TG_TABLE_NAME = 'research_questions' THEN
+      IF TG_OP = 'UPDATE' AND (NEW.origin_type IS DISTINCT FROM OLD.origin_type OR NEW.origin_reference IS DISTINCT FROM OLD.origin_reference) THEN
+        RAISE EXCEPTION 'Writer cannot rewrite question origin';
+      END IF;
+    ELSIF TG_TABLE_NAME = 'research_findings' THEN
+      IF TG_OP = 'UPDATE' AND (
+        NEW.support_status IS DISTINCT FROM OLD.support_status OR
+        NEW.confidence_score IS DISTINCT FROM OLD.confidence_score OR
+        NEW.provenance_notes IS DISTINCT FROM OLD.provenance_notes
+      ) THEN
+        RAISE EXCEPTION 'Writer cannot modify finding review fields';
+      END IF;
     ELSIF TG_TABLE_NAME = 'content_briefs' THEN
       IF TG_OP = 'UPDATE' AND (NEW.status IN ('approved', 'rejected') OR OLD.status IN ('approved', 'rejected')) THEN
         RAISE EXCEPTION 'Writer cannot approve or reject content briefs';
@@ -319,6 +348,8 @@ END;
 $$;
 REVOKE ALL ON FUNCTION public.fn_check_research_writer_restrictions() FROM PUBLIC, anon;
 CREATE TRIGGER trg_research_projects_writer_restrict BEFORE UPDATE ON public.research_projects FOR EACH ROW EXECUTE FUNCTION public.fn_check_research_writer_restrictions();
+CREATE TRIGGER trg_research_questions_writer_restrict BEFORE UPDATE ON public.research_questions FOR EACH ROW EXECUTE FUNCTION public.fn_check_research_writer_restrictions();
+CREATE TRIGGER trg_research_findings_writer_restrict BEFORE UPDATE ON public.research_findings FOR EACH ROW EXECUTE FUNCTION public.fn_check_research_writer_restrictions();
 CREATE TRIGGER trg_content_briefs_writer_restrict BEFORE UPDATE ON public.content_briefs FOR EACH ROW EXECUTE FUNCTION public.fn_check_research_writer_restrictions();
 
 
@@ -340,9 +371,7 @@ DECLARE
   v_org_role TEXT;
 BEGIN
   -- Check auth
-  IF auth.uid() IS NULL THEN
-    RAISE EXCEPTION 'Authentication required';
-  END IF;
+  IF auth.uid() IS NULL THEN RAISE EXCEPTION 'Authentication required'; END IF;
 
   SELECT role INTO v_brand_role FROM public.brand_members WHERE brand_id = p_brand_id AND user_id = auth.uid();
   SELECT role INTO v_org_role FROM public.organization_members WHERE organization_id = (SELECT organization_id FROM public.brands WHERE id = p_brand_id) AND user_id = auth.uid();
@@ -351,18 +380,13 @@ BEGIN
     RAISE EXCEPTION 'Forbidden: Not authorized for this brand';
   END IF;
 
-  -- Lock opportunity
   SELECT * INTO v_opp FROM public.opportunities WHERE id = p_opportunity_id AND brand_id = p_brand_id FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'Opportunity not found or mismatch'; END IF;
   IF v_opp.status IN ('dismissed', 'completed') THEN RAISE EXCEPTION 'Cannot handoff dismissed or completed opportunities'; END IF;
 
-  -- Idempotency check: active project
   SELECT id INTO v_project_id FROM public.research_projects WHERE opportunity_id = p_opportunity_id AND brand_id = p_brand_id AND status NOT IN ('completed', 'archived') LIMIT 1;
-  IF FOUND THEN
-    RETURN v_project_id;
-  END IF;
+  IF FOUND THEN RETURN v_project_id; END IF;
 
-  -- Insert new project
   INSERT INTO public.research_projects (
     organization_id, brand_id, opportunity_id, title, objective, mode, status, created_by, opportunity_context
   ) VALUES (
@@ -373,7 +397,6 @@ BEGIN
     jsonb_build_object('type', v_opp.type, 'target_keyword', v_opp.target_keyword, 'rationale', v_opp.rationale, 'source_signals', v_opp.source_signals) 
   ) RETURNING id INTO v_project_id;
 
-  -- Optionally generate an initial question based on target_keyword
   IF v_opp.target_keyword IS NOT NULL THEN
     INSERT INTO public.research_questions (
       project_id, organization_id, brand_id, question_text, origin_type, origin_reference
@@ -420,6 +443,7 @@ BEGIN
     RAISE EXCEPTION 'Forbidden: Not authorized to review findings';
   END IF;
 
+  -- Bypassing writer restrictions here since running as SECURITY DEFINER
   UPDATE public.research_findings
   SET support_status = p_support_status,
       confidence_score = COALESCE(p_confidence_score, confidence_score),
@@ -453,15 +477,19 @@ BEGIN
   SELECT role INTO v_brand_role FROM public.brand_members WHERE brand_id = v_brief.brand_id AND user_id = auth.uid();
   SELECT role INTO v_org_role FROM public.organization_members WHERE organization_id = v_brief.organization_id AND user_id = auth.uid();
 
-  -- Reviewer can only transition review -> review with notes, but Strategist can approve/reject.
-  -- Simplified: Reviewers can't set to approved, only Strategists/Admins.
+  IF (v_brand_role IS NULL OR v_brand_role NOT IN ('strategist', 'reviewer')) AND (v_org_role IS NULL OR v_org_role NOT IN ('owner', 'admin')) THEN
+    RAISE EXCEPTION 'Forbidden: Not authorized to review briefs';
+  END IF;
+
+  -- Reviewer cannot de-finalize approved/rejected brief
+  IF v_brief.status IN ('approved', 'rejected') AND (v_brand_role NOT IN ('strategist') AND v_org_role NOT IN ('owner', 'admin')) THEN
+    RAISE EXCEPTION 'Reviewer cannot de-finalize approved/rejected Brief';
+  END IF;
+
+  -- Reviewer cannot set status to approved/rejected
   IF p_status IN ('approved', 'rejected') THEN
     IF (v_brand_role IS NULL OR v_brand_role NOT IN ('strategist')) AND (v_org_role IS NULL OR v_org_role NOT IN ('owner', 'admin')) THEN
       RAISE EXCEPTION 'Forbidden: Only strategist or admin can approve/reject briefs';
-    END IF;
-  ELSE
-    IF (v_brand_role IS NULL OR v_brand_role NOT IN ('strategist', 'reviewer')) AND (v_org_role IS NULL OR v_org_role NOT IN ('owner', 'admin')) THEN
-      RAISE EXCEPTION 'Forbidden: Not authorized to review briefs';
     END IF;
   END IF;
 

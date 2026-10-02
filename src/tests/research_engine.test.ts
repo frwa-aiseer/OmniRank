@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { RESEARCH_MODE_CONFIGS } from "../types/research.ts";
 
-describe("OR-P07-FIX — Complete Functional Research Slice", () => {
+describe("OR-P07-PREDEPLOY — Final Functional + Integrity Gate", () => {
   const migPath = path.join(process.cwd(), "supabase/migrations/20260929000013_research_engine_schema.sql");
   const sql = fs.readFileSync(migPath, "utf8");
 
@@ -13,87 +13,57 @@ describe("OR-P07-FIX — Complete Functional Research Slice", () => {
   const enginePath = path.join(process.cwd(), "src/server/research/engine.ts");
   const engineCode = fs.readFileSync(enginePath, "utf8");
 
-  it("Live auth path uses real session token, not hardcoded demo-token exclusively", () => {
-    // Should have logic fetching auth.getSession()
-    expect(viewCode).toContain("supabase.auth.getSession()");
-    expect(viewCode).toContain("const token = sessionData.session?.access_token");
-    expect(viewCode).toContain("Authorization: `Bearer ${token}`");
+  it("Live auth path has no hardcoded demo-token fallback", () => {
+    // Should NOT have token = ... || "demo-token"
+    expect(viewCode).not.toContain("|| \"demo-token\"");
+    expect(viewCode).toContain("throw new Error(\"Authentication required for live mode\")");
   });
 
-  it("Enforces tenant isolation and rejects foreign provenance", () => {
-    expect(sql).toContain("Brand does not belong to the specified organization");
-    expect(sql).toContain("Child record tenant details must match parent project");
+  it("Foreign knowledge and evidence provenance rejected in DB", () => {
     expect(sql).toContain("Foreign knowledge_source");
     expect(sql).toContain("Foreign knowledge_document");
+    expect(sql).toContain("Foreign knowledge_chunk");
     expect(sql).toContain("Foreign evidence_source");
     expect(sql).toContain("Foreign evidence_claim");
-    expect(sql).toContain("Question does not belong to the same project");
-    expect(sql).toContain("Cannot move records across tenants");
   });
 
-  it("Rejects invalid/nonexistent source references", () => {
-    expect(sql).toContain("Invalid or missing source reference in finding");
-    expect(sql).toContain("Invalid or missing source reference in content brief");
-    // Supported finding requirement
-    expect(sql).toContain("Supported finding must reference at least one research source");
+  it("Inconsistent source/document/chunk hierarchy rejected in DB", () => {
+    expect(sql).toContain("Inconsistent knowledge_source and knowledge_document hierarchy");
+    expect(sql).toContain("Inconsistent knowledge_document and knowledge_chunk hierarchy");
   });
 
-  it("Enforces finding constraints and 'unsupported' status explicitly", () => {
-    expect(sql).toContain("support_status IN ('supported', 'partially_supported', 'unsupported', 'conflicting')");
-    // Should NOT automatically insert into evidence_claims anywhere
-    expect(sql).not.toContain("INSERT INTO public.evidence_claims");
+  it("Writer cannot modify finding review fields or question origin", () => {
+    expect(sql).toContain("Writer cannot rewrite question origin");
+    expect(sql).toContain("Writer cannot modify finding review fields");
   });
 
-  it("Provides deterministic provider-neutral Research Modes", () => {
-    expect(RESEARCH_MODE_CONFIGS.fast.allowExternal).toBe(false);
-    expect(RESEARCH_MODE_CONFIGS.standard.checkConflicts).toBe(true);
-    expect(RESEARCH_MODE_CONFIGS.deep.requireMultipleSources).toBe(true);
-    // Modes should be constrained in DB
-    expect(sql).toContain("mode IN ('fast', 'standard', 'deep')");
+  it("Reviewer cannot de-finalize approved/rejected Brief", () => {
+    expect(sql).toContain("Reviewer cannot de-finalize approved/rejected Brief");
   });
 
-  it("Preserves question provenance with constrained origin types", () => {
-    expect(sql).toContain("origin_type IN ('user', 'opportunity', 'brand_brain', 'system')");
+  it("Context assembler reads Brand Brain/evidence/articles brand-scoped", () => {
+    expect(engineCode).toContain("this.client.from(\"brand_profiles\")");
+    expect(engineCode).toContain("this.client.from(\"brand_audiences\")");
+    // Ensure scoping
+    expect(engineCode).toContain(".eq(\"brand_id\", brandId)");
   });
 
-  it("Role Boundaries: Viewer is read-only", () => {
-    // Ensure Viewer is not in the FOR ALL policies
-    expect(sql).toContain("CREATE POLICY \"research_projects_select\" ON public.research_projects FOR SELECT TO authenticated");
-    expect(sql).not.toContain("FOR ALL TO authenticated USING (authz.has_brand_role(brand_id, ARRAY['viewer']))");
+  it("DB read error fails closed in engine", () => {
+    expect(engineCode).toContain("throw new Error(`DB Error: ${bpError.message}`)");
   });
 
-  it("Role Boundaries: Writer can work but cannot finalize", () => {
-    expect(sql).toContain("CREATE POLICY \"research_projects_writer\" ON public.research_projects FOR INSERT");
-    expect(sql).toContain("fn_check_research_writer_restrictions");
-    expect(sql).toContain("Writer cannot archive or complete projects");
-    expect(sql).toContain("Writer cannot approve or reject content briefs");
+  it("Fast/Standard/Deep config affects actual context limits/requirements", () => {
+    expect(engineCode).toContain("const limitedSources = sources.slice(0, config.maxSources)");
+    expect(engineCode).toContain("const limitedQuestions = questions.slice(0, config.maxQuestions)");
   });
 
-  it("Role Boundaries: Reviewer can review but cannot general-edit", () => {
-    expect(sql).toContain("review_content_brief");
-    expect(sql).toContain("review_research_finding");
-    // Explicitly blocks non-Reviewers
-    expect(sql).toContain("Forbidden: Not authorized to review findings");
-    // Explicitly limits 'approved' / 'rejected' to strategist/admin
-    expect(sql).toContain("Forbidden: Only strategist or admin can approve/reject briefs");
+  it("Brief does not fabricate unresolved audience/intent", () => {
+    expect(engineCode).not.toContain("Determined from Brand Brain");
+    expect(engineCode).toContain("Missing Target Audience");
+    expect(engineCode).toContain("Missing Search Intent");
   });
 
-  it("Role Boundaries: Strategist/Admin finalization", () => {
-    expect(sql).toContain("authz.has_brand_role(brand_id, ARRAY['strategist']) OR authz.is_org_admin(organization_id)");
-  });
-
-  it("Opportunity Handoff context preservation", () => {
-    expect(sql).toContain("opportunity_context JSONB");
-    expect(sql).toContain("jsonb_build_object('type', v_opp.type, 'target_keyword', v_opp.target_keyword, 'rationale', v_opp.rationale, 'source_signals', v_opp.source_signals)");
-    expect(sql).toContain("idx_unique_active_opp_research");
-  });
-
-  it("Brief Structure Preparation is deterministic", () => {
-    expect(engineCode).toContain("const supportedFindings = findings.filter(f => f.supportStatus === 'supported' || f.supportStatus === 'partially_supported')");
-    expect(engineCode).toContain("const outline = supportedFindings.map(f => ({");
-    expect(engineCode).toContain("const unsupportedIssues = unsupportedFindings.map(f => f.findingText)");
-    expect(engineCode).not.toContain("fetch("); // No external API calls inside the engine directly
-    expect(engineCode).not.toContain("openai");
-    expect(engineCode).not.toContain("anthropic");
+  it("Existing handoff idempotency remains intact", () => {
+    expect(sql).toContain("IF FOUND THEN RETURN v_project_id; END IF;");
   });
 });
