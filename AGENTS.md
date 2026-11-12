@@ -21,8 +21,19 @@ Learn → Discover → Research → Create → Verify → Optimize → Approve �
 Core engines:
 Brand Brain, Opportunity Engine, Research Engine, Content Engine, Growth Brain, Automation Engine.
 
-Architecture must remain vendor-neutral and cost-conscious:
-TypeScript, React/Vite current repository, Supabase PostgreSQL/Auth/RLS/pgvector, Cloudflare-compatible edge/API/CDN, Cloudflare R2 target, Inngest target, provider-neutral OmniRouter, WordPress first CMS, GSC + GA4, Stripe after local entitlement logic.
+Architecture must remain vendor-neutral and cost-conscious.
+
+Alpha concrete stack:
+- TypeScript + current React/Vite repository
+- Supabase PostgreSQL/Auth/RLS/pgvector
+- Supabase Storage for Alpha object storage
+- Supabase Queues/Cron/Edge Functions or local worker for Alpha workflow execution
+- provider-neutral OmniRouter with OpenRouter as the only required live Alpha AI adapter
+- local WordPress via @wp-playground/cli for OR-P10 integration testing
+- GSC + GA4 for OR-P11
+- Stripe TEST/Sandbox for OR-P12 billing acceptance
+
+Cloudflare/R2/AI Gateway, Inngest, WPVibe, Resend and direct AI-provider APIs are optional later production/Beta adapters, not Alpha prerequisites.
 
 Do not add DataForSEO or other paid SEO databases during Alpha unless a later prompt explicitly changes this decision.
 
@@ -110,16 +121,22 @@ Mocks must model the real schema and must fail when a nonexistent column is requ
 - Structured output must be validated before persistence.
 - AI output is a proposal, not authorization for publishing, billing, credentials, role changes or destructive actions.
 
-## 8. Credential gate and external integrations
+## 8. Free-first phase-gated credentials and integrations
 
-Do not start autonomous Alpha implementation until `docs/CREDENTIALS-REQUIRED.md` passes.
+Read `docs/FREE-ALPHA-STACK.md` and `docs/CREDENTIALS-REQUIRED.md`.
 
+- Do not collect or require all external credentials before development starts.
+- Require only the credentials needed by the current phase.
+- P07 may proceed with the existing Supabase project.
+- Before P08 require OpenRouter only.
+- P10 uses local WordPress via @wp-playground/cli; do not require WPVibe or hosted WordPress.
+- Before P11 require Google OAuth plus GSC and GA4 properties.
+- Before P12 billing acceptance require Stripe TEST/Sandbox credentials.
+- P12 automation uses Supabase Queues/Cron rather than requiring Inngest.
+- Alpha email uses Supabase Auth/in-app notifications; Resend is not required.
 - Never commit, print, log, or expose secret values.
-- Use TEST/STAGING/SANDBOX credentials where available.
-- Validate each required integration with a narrow live check before its dependent phase.
-- Deterministic mocks are still required for tests, but mocks do not count as completion of a required live integration.
-- If a required credential is missing, invalid, insufficiently scoped, or the live check fails, stop before the dependent phase and report the exact non-secret requirement.
-- Required Alpha integrations may not be marked PASS with a live-verification-pending status.
+- Mocks supplement tests but cannot replace the real concrete Alpha implementation for that phase.
+- If a phase-required credential is missing/invalid, stop only before that dependent phase, not before unrelated earlier work.
 - Do not fake a successful live connection.
 
 ## 9. Definition of done for one phase
@@ -144,11 +161,11 @@ Do not commit a phase marked PASS if any acceptance item is known to be incomple
 ## 10. Autonomous sequencing
 
 When running under `OMNIRANK-AUTOPILOT.md`:
-- run the credential preflight first and do not start implementation until it passes;
+- start with requirements reconciliation/P07 closure immediately using the existing Supabase project;
+- check phase-specific credentials only when the next phase actually needs them;
 - after a phase passes, commit/push and immediately continue to the next pending phase;
-- do not wait for the user between phases;
-- stop when a required credential/live integration fails or another hard blocker is reached;
-- never treat mocks as completion evidence for required live integrations;
+- do not wait for the user between phases unless a phase-required credential or another hard blocker is reached;
+- never treat mocks as completion evidence when a real free/sandbox Alpha implementation exists;
 - never start Beta-only/deferred features.
 
 The final output after an autonomous run should contain only:
