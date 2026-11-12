@@ -21,20 +21,25 @@ The original omnirank-prompts.json remains the product-history roadmap. The v2 p
 
 Use this exact instruction:
 
-> Run OMNIRANK-AUTOPILOT from the current main branch. Follow AGENTS.md, docs/CREDENTIALS-REQUIRED.md and omnirank-prompts-v2.json. FIRST run the credential preflight and do not start implementation until every required credential group passes its live check. Never print or commit secret values. Then start at the first incomplete phase and execute phases sequentially without waiting for me between passing phases. Before each phase, inspect the real dependency schema/types/routes named by that phase, build a private acceptance checklist, and implement the full vertical slice DB → authorization → types → service/repository → API → UI → behavioral tests → live integration verification. Self-audit before committing. Run focused tests, then lint/test/build once per phase. Remove temporary scripts. Commit and push each passing phase separately and continue automatically. A required credential or required live integration failure is a hard blocker. Mocks remain mandatory for tests but do not count as completion of required live integrations. Do not start Beta features.
+> Run OMNIRANK-AUTOPILOT from the current main branch. Follow AGENTS.md, docs/FREE-ALPHA-STACK.md, docs/CREDENTIALS-REQUIRED.md and omnirank-prompts-v2.json. Start immediately with the first incomplete phase using the free-first Alpha stack. Do NOT require all future credentials up front. Check only phase-specific credentials immediately before the phase that needs them: existing Supabase for P07, OpenRouter before P08, local WordPress Playground for P10, Google OAuth/GSC/GA4 before P11, and Stripe TEST/Sandbox before P12 billing acceptance. Do not require Cloudflare, R2, AI Gateway, Inngest, WPVibe, Resend or direct OpenAI/Anthropic/Gemini API accounts for Alpha. Before each phase, inspect the real dependency schema/types/routes, build a private acceptance checklist, implement the full vertical slice DB → authorization → types → service/repository → API → UI → behavioral tests → concrete Alpha integration verification, self-audit, run focused tests, then lint/test/build once, remove temporary scripts, commit/push, and continue automatically. Stop only when the NEXT phase lacks a credential it truly requires or another hard blocker occurs. Do not start Beta features.
 
 ---
 
 ## Autonomous algorithm
 
-## Credential preflight
+## Phase-gated credential checks
 
-Before all implementation:
-- Read `docs/CREDENTIALS-REQUIRED.md`.
-- Confirm required secrets exist without printing values.
-- Run the safe live validation for Supabase, Cloudflare/R2/AI Gateway, WordPress staging, GSC, GA4, Stripe TEST, Inngest, primary AI route, fallback AI route and Resend/email when required.
-- Record only PASS/FAIL plus non-secret identifiers.
-- If any required group fails, STOP. Do not begin OR-R00.
+Do not run one global credential gate.
+
+- OR-R00 and OR-P07C: proceed with the existing Supabase project.
+- Before OR-P08: require OPENROUTER_API_KEY and OPENROUTER_ALPHA_BUDGET_USD.
+- OR-P10: use local WordPress via @wp-playground/cli; no hosted WordPress credential is required.
+- Before OR-P11: require Google OAuth client credentials plus GSC/GA4 property access.
+- Before OR-P12 billing acceptance: require Stripe TEST/Sandbox keys/webhook secret.
+- OR-P12 automation: use Supabase Queues/Cron; do not require Inngest.
+- Resend/Cloudflare/direct provider credentials are not Alpha prerequisites.
+
+If the next phase-specific credential is missing, stop at that boundary and report only that requirement.
 
 For each phase in `omnirank-prompts-v2.json` after credential preflight passes:
 
@@ -129,14 +134,14 @@ Otherwise:
 
 ## External integration rule
 
-All required external credentials must be configured before autonomous Alpha implementation starts. The exact groups and live checks are defined in `docs/CREDENTIALS-REQUIRED.md`.
+Use the concrete free-first Alpha implementation from `docs/FREE-ALPHA-STACK.md`.
 
-1. Use real TEST/STAGING/SANDBOX credentials where supported.
-2. Never print, commit or log secrets.
-3. Keep deterministic mocks for repeatable tests.
-4. Also run the real live integration check.
-5. If the live check fails, the dependent phase is not complete and the autopilot stops.
-6. No required Alpha integration may remain live-verification-pending.
+1. Do not add a paid service merely because it appeared in an older architecture draft.
+2. Keep provider interfaces portable so later production adapters can be added without rewriting business logic.
+3. Validate the real Alpha implementation for the phase: Supabase, OpenRouter, local WordPress, Google APIs or Stripe Sandbox as applicable.
+4. Never print, commit or log secrets.
+5. If a required phase-specific live check fails, stop at that phase boundary.
+6. Do not mark a feature complete if only an interface/mock exists while its selected Alpha implementation is untested.
 
 ---
 
@@ -166,8 +171,8 @@ After the autonomous run, return only:
 - Commit SHA per phase
 - Test count per phase
 - Supabase migrations created/deployed
-- Credential preflight result
-- Live integration verification result per integration-dependent phase
+- Phase-specific credential checks encountered
+- Free-first Alpha integration verification per integration-dependent phase
 - Hard blockers
 - Path to `docs/ALPHA-READINESS.md` if P13 completed
 
