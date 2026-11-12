@@ -1,21 +1,22 @@
 {
   "name": "OmniRank Execution-Ready Alpha Prompt Pack",
-  "version": "2.1",
+  "version": "2.2",
   "supersedesExecutionOf": "omnirank-prompts.json",
   "preservesProductScopeFrom": [
     "omnirank-prompts.json",
     "OmniRank Project Context & Background.md",
     "OmniRank Strategy Plan.txt"
   ],
-  "executionMode": "credential-gated-autonomous-sequential",
+  "executionMode": "free-first-phase-gated-autonomous-sequential",
   "objective": "Complete the OmniRank Alpha implementation with fewer audit/fix loops by requiring schema discovery, vertical implementation, behavioral tests, self-audit, and completion gates inside every phase.",
   "stopRules": {
     "stopOnHardBlockerOnly": true,
-    "continueOnMissingExternalCredentials": false,
+    "continueOnMissingExternalCredentials": true,
     "neverStartBetaFeatures": true,
     "noUserPauseBetweenPassingPhases": true,
-    "requireCredentialPreflight": true,
-    "requireLiveIntegrationForCompletion": true
+    "requireCredentialPreflight": false,
+    "requireLiveIntegrationForCompletion": true,
+    "phaseGateCredentials": true
   },
   "globalExecutionContract": {
     "sourceOfTruth": "Current repository plus deployed Supabase schema",
@@ -41,16 +42,17 @@
       "commit and push"
     ],
     "doneGate": [
-      "All credentials required by the current phase were validated live before implementation.",
+      "Only credentials required by the current phase are gated; unrelated future credentials never block earlier work.",
       "No known runtime blocker.",
       "No fake IDs, fake sources, fake metrics, placeholder factual conclusions or dead UI controls.",
       "All DB field mappings match actual schema.",
       "Focused tests pass.",
       "Full lint, test and build pass.",
       "Temporary helper scripts are removed.",
-      "Integration-dependent acceptance uses live test/staging services; mocks alone do not qualify as PASS."
+      "Integration-dependent acceptance exercises the selected real free/sandbox Alpha implementation; mocks alone do not qualify as PASS."
     ],
-    "credentialManifest": "docs/CREDENTIALS-REQUIRED.md"
+    "credentialManifest": "docs/CREDENTIALS-REQUIRED.md",
+    "freeAlphaStack": "docs/FREE-ALPHA-STACK.md"
   },
   "phases": [
     {
@@ -170,7 +172,8 @@
       "preflight": [
         "Inspect actual article schema/types/validator/editor, content_briefs/research APIs, brand/evidence schema and current environment conventions.",
         "Resolve the exact canonical article envelope and supported block types from current code before generating anything.",
-        "Do not name providers in product-facing task contracts."
+        "Do not name providers in product-facing task contracts.",
+        "Require only OPENROUTER_API_KEY and OPENROUTER_ALPHA_BUDGET_USD for live Alpha AI testing."
       ],
       "dataModel": [
         "Create forward migration with ai_tasks, ai_models, ai_routing_policies and ai_usage_events.",
@@ -183,7 +186,7 @@
         "Create OmniRouter interface that accepts taskCode, structured input, quality tier, max cost, timeout, required output schema and privacy constraints.",
         "Provider-specific adapters live only under the routing layer.",
         "Implement deterministic mock adapter for tests/development.",
-        "Implement environment-configured adapter boundary for Cloudflare AI Gateway/OpenRouter/direct providers without hard-coding one as product truth.",
+        "Implement provider-neutral OmniRouter with OpenRouter as the concrete Alpha adapter. Keep adapter boundaries so direct providers or gateways can be added later without changing feature code.",
         "Support timeout, retry/fallback policy, structured JSON validation and usage recording.",
         "No API keys in browser responses, DB rows exposed to clients, logs or prompts."
       ],
@@ -222,7 +225,7 @@
         "One-block rewrite preserves all other blocks byte-for-byte/structurally unchanged.",
         "Foreign-brand research/article references are rejected.",
         "No source/evidence fabrication.",
-        "Primary and fallback AI routes are live-tested through OmniRouter using configured credentials and usage/cost events are verified in the real database."
+        "Primary and fallback model routes are live-tested through the same OpenRouter account, using different models/providers where available; usage/cost events are verified in the real database and remain within the configured Alpha budget."
       ],
       "tests": [
         "Router selection and fallback.",
@@ -294,7 +297,8 @@
       "objective": "Publish only an approved exact article version to WordPress through a secure, idempotent integration while keeping structured JSON canonical.",
       "preflight": [
         "Inspect actual article block schema and approved-version contract before writing renderer.",
-        "Create CMS adapter interface so WordPress is first implementation, not permanent architecture."
+        "Create CMS adapter interface so WordPress is first implementation, not permanent architecture.",
+        "Use local WordPress started with @wp-playground/cli; do not require WPVibe or paid hosting."
       ],
       "dataModel": [
         "Create integrations, protected credential references, cms_content_mappings and publishing_jobs if not already present.",
@@ -326,7 +330,7 @@
         "Unapproved/wrong-version publish denied.",
         "Retry cannot create duplicate post.",
         "Renderer fixtures cover all supported blocks.",
-        "A staging/test WordPress connection is live-tested end-to-end: connection, draft create/update, media path, schedule/publish path, mapping and idempotent retry."
+        "A local WordPress Playground instance is exercised end-to-end through the real WordPress REST API: authenticated connection, draft create/update, media path, schedule/publish path, mapping and idempotent retry."
       ],
       "tests": [
         "credential redaction.",
@@ -347,7 +351,8 @@
       "objective": "Synchronize search/analytics data into local daily facts and convert it into explainable Growth Brain recommendations instead of querying Google on every screen load.",
       "preflight": [
         "Inspect websites/articles/opportunities and current integration conventions.",
-        "Normalize URL/article mapping rules before recommendation logic."
+        "Normalize URL/article mapping rules before recommendation logic.",
+        "GSC + GA4 are the only required external analytics integrations for Alpha; no paid SEO provider."
       ],
       "dataModel": [
         "Create gsc_query_daily, gsc_page_daily, gsc_page_query_daily, ga4_landing_page_daily, content_performance_snapshots, content_health_assessments and growth_recommendations.",
@@ -405,7 +410,7 @@
         "Reuse P08 ai_usage_events as internal AI cost ledger; do not merge customer credits with token accounting."
       ],
       "automation": [
-        "Inngest adapter/interface with deterministic local runner fallback.",
+        "Implement AutomationEngine behind a workflow abstraction. Alpha concrete runtime uses Supabase Queues (pgmq), Supabase Cron (pg_cron), and local worker/Edge Function execution as appropriate.",
         "Templates: Content Decay Watch, CTR Opportunity Watch, Internal Link Watch, Weekly Opportunity Report, Auto-Publish Approved Content.",
         "Manual, Copilot and opt-in brand-scoped Autopilot.",
         "Approval rules, confidence thresholds, max actions/day, exclusions and notification hooks.",
@@ -415,7 +420,7 @@
         "Customer-facing unit is Article Run, not tokens.",
         "Server-side entitlement checks gate expensive actions and automation.",
         "Local plan logic is tested before Stripe integration.",
-        "Stripe adapter handles subscription sync/webhooks idempotently when credentials exist.",
+        "Use Stripe TEST/Sandbox for live Alpha billing acceptance after local entitlement logic passes; handle subscription sync/webhooks idempotently.",
         "No browser-supplied entitlement/plan value is trusted."
       ],
       "cost": [
@@ -427,9 +432,9 @@
         "Rate/action limits enforced server-side.",
         "Webhook/retry idempotency.",
         "Client cannot forge entitlement.",
-        "Inngest live event execution is verified with configured keys.",
         "Stripe TEST-mode subscription/webhook/entitlement flow is live-tested with configured keys and webhook secret.",
-        "Configured email notification path is live-tested where automation notifications are used."
+        "Supabase Queues/Cron workflow execution is live-tested for schedule, retry, idempotency and workflow audit state.",
+        "Stripe TEST/Sandbox subscription/webhook/entitlement flow is live-tested."
       ],
       "tests": [
         "automation policy gates.",
@@ -475,8 +480,8 @@
         "OmniRouter structured article generation",
         "Quality gates",
         "human review and exact-version approval",
-        "WordPress adapter publish (live if credentials, deterministic integration fixture otherwise)",
-        "GSC/GA4 sync (live if credentials, fixtures otherwise)",
+        "WordPress publish through the local WordPress Playground integration",
+        "GSC/GA4 live sync against configured user properties",
         "Growth Brain next recommendation"
       ],
       "metrics": [
@@ -489,7 +494,7 @@
       "outputs": [
         "docs/ALPHA-READINESS.md",
         "docs/alpha-requirements-matrix.json updated",
-        "docs/ALPHA-READINESS.md contains zero required-live-integration pending items."
+        "docs/ALPHA-READINESS.md distinguishes Alpha-complete free implementations from later production/Beta adapter upgrades."
       ],
       "acceptance": [
         "All alpha-critical requirements PASS.",
@@ -497,7 +502,7 @@
         "No known approval/publishing bypass.",
         "No duplicate-publish path under retry.",
         "No Beta feature started.",
-        "The Alpha end-to-end journey passes using configured live test/staging integrations; mocks supplement tests but do not replace live acceptance."
+        "The Alpha end-to-end journey passes using the selected free/sandbox Alpha stack: Supabase + OpenRouter + local WordPress + GSC/GA4 + Stripe TEST where applicable."
       ],
       "tests": [
         "Full lint/test/build.",
@@ -510,19 +515,41 @@
   ],
   "credentialGate": {
     "code": "OR-C00",
-    "title": "Credential and Live Integration Preflight",
-    "mustPassBeforeAnyAutomation": true,
-    "requiredGroups": [
-      "Supabase deployment/runtime",
-      "Cloudflare/R2/AI Gateway",
-      "WordPress staging/test",
-      "Google OAuth + GSC + GA4",
-      "Stripe TEST mode",
-      "Inngest",
-      "Primary AI route and fallback AI route",
-      "Resend/email notification path when required"
-    ],
+    "title": "Phase-Gated Free-First Credentials",
+    "mustPassBeforeAnyAutomation": false,
     "source": "docs/CREDENTIALS-REQUIRED.md",
-    "onFailure": "STOP before OR-R00 and report the exact non-secret credential/scope/live-check failure."
+    "requiredNow": [
+      "Existing Supabase project/runtime access"
+    ],
+    "boundaries": {
+      "OR-P08": [
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_ALPHA_BUDGET_USD"
+      ],
+      "OR-P10": [
+        "No external credential: use local WordPress via @wp-playground/cli"
+      ],
+      "OR-P11": [
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GSC_SITE_URL",
+        "GA4_PROPERTY_ID"
+      ],
+      "OR-P12": [
+        "Stripe TEST/Sandbox credentials for billing acceptance; no Inngest/Resend requirement"
+      ]
+    },
+    "notRequiredForAlpha": [
+      "Cloudflare",
+      "Cloudflare R2",
+      "Cloudflare AI Gateway",
+      "Inngest",
+      "WPVibe",
+      "Resend",
+      "direct OpenAI API",
+      "direct Anthropic API",
+      "direct Gemini API"
+    ],
+    "onFailure": "Stop only at the next dependent phase boundary. Earlier unrelated phases may proceed."
   }
 }
