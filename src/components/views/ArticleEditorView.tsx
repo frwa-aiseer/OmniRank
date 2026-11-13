@@ -44,8 +44,11 @@ import {
   HelpCircle,
   Code,
   Minus,
+  Sparkles,
+  CheckCircle2,
 } from "lucide-react";
 import { cn } from "../../lib/utils.ts";
+import { supabase } from "../../lib/supabase/client.ts";
 import {
   ArticleEnvelope,
   ArticleBlock,
@@ -410,27 +413,49 @@ type RightPanel = "ai" | "seo" | "geo" | "evidence" | "brand" | "links";
 function VersionRow({
   version,
   onRestore,
+  onApprove,
+  isApproved,
 }: {
   version: ArticleVersion;
   onRestore: (id: string) => void;
+  onApprove?: (id: string) => void;
+  isApproved?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-neutral-100 group">
       <div className="min-w-0">
-        <div className="text-xs font-medium text-neutral-700 truncate">
-          v{version.versionNumber} {version.label && `— ${version.label}`}
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-neutral-700 truncate">
+            v{version.versionNumber} {version.label && `— ${version.label}`}
+          </span>
+          {isApproved && (
+            <span className="px-1 py-0.2 text-[9px] font-semibold bg-emerald-100 text-emerald-700 rounded">
+              Approved
+            </span>
+          )}
         </div>
         <div className="text-[10px] text-neutral-400">
           {new Date(version.createdAt).toLocaleString()}
         </div>
       </div>
-      <button
-        onClick={() => onRestore(version.id)}
-        className="ml-2 p-1 rounded text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-        title="Restore this version"
-      >
-        <RotateCcw className="w-3.5 h-3.5" />
-      </button>
+      <div className="flex items-center gap-1">
+        {onApprove && !isApproved && (
+          <button
+            onClick={() => onApprove(version.id)}
+            className="p-1 rounded text-neutral-400 hover:text-emerald-600 hover:bg-emerald-50 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+            title="Approve this version"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <button
+          onClick={() => onRestore(version.id)}
+          className="p-1 rounded text-neutral-400 hover:text-indigo-600 hover:bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+          title="Restore this version"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -454,6 +479,7 @@ export interface ArticleEditorViewProps {
 export function ArticleEditorView({
   articleId,
   brandId,
+  organizationId,
   userId,
   initialContent,
   initialVersions = [],
@@ -474,6 +500,19 @@ export function ArticleEditorView({
   const [saving, setSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // OR-P08 / OR-P09 state
+  const [selectedBlockId, setSelectedBlockId] = useState<string>("");
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [briefIdInput, setBriefIdInput] = useState("");
+  const [approvedVersionId, setApprovedVersionId] = useState<string | null>(null);
+
+  // Audits state
+  const [seoAudit, setSeoAudit] = useState<any>(null);
+  const [geoAudit, setGeoAudit] = useState<any>(null);
+  const [brandAudit, setBrandAudit] = useState<any>(null);
+  const [auditLoading, setAuditLoading] = useState<string | null>(null);
 
   // Counter to trigger debounced autosave on editor document change
   const [docVersion, setDocVersion] = useState(0);
@@ -677,6 +716,144 @@ export function ArticleEditorView({
     setTimeout(() => setStatusMessage(null), 3000);
   };
 
+  const getAuthToken = async () => {
+    const { data: sessionData } = await supabase.auth.getSession();
+    return sessionData?.session?.access_token;
+  };
+
+  const handleRewriteBlock = async () => {
+    if (!selectedBlockId || !aiInstruction) return;
+    setAiLoading(true);
+    setStatusMessage("Rewriting block with OmniRouter...");
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/articles/${brandId}/${articleId}/blocks/${selectedBlockId}/rewrite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ instruction: aiInstruction, organizationId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Rewrite failed");
+      const updatedBlock = data.rewrittenBlock;
+      if (updatedBlock) {
+        blockMapRef.current.set(updatedBlock.id, updatedBlock);
+        const bnPartial = omniBlockToBnPartial(updatedBlock);
+        editor.updateBlock(selectedBlockId, bnPartial as any);
+      }
+      setStatusMessage(`Block rewritten (${data.modelUsed})`);
+      setAiInstruction("");
+    } catch (err: any) {
+      alert(err.message);
+      setStatusMessage(null);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleGenerateFromBrief = async () => {
+    if (!briefIdInput) return;
+    setAiLoading(true);
+    setStatusMessage("Generating draft from brief with OmniRouter...");
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/articles/${brandId}/generate-from-brief`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ briefId: briefIdInput, organizationId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      const blocks: ArticleBlock[] = data.blocks || [];
+      if (blocks.length > 0) {
+        const bnPartials = blocks.map(omniBlockToBnPartial);
+        editor.replaceBlocks(editor.document, bnPartials as any);
+        blocks.forEach((b) => {
+          blockTypeRegistryRef.current.set(b.id, b.type);
+          blockMapRef.current.set(b.id, b);
+        });
+      }
+      setStatusMessage(`Generated ${blocks.length} blocks (${data.modelUsed})`);
+    } catch (err: any) {
+      alert(err.message);
+      setStatusMessage(null);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleRunSeoAudit = async () => {
+    setAuditLoading("seo");
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/articles/${brandId}/${articleId}/audits/seo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ organizationId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSeoAudit(data.audit);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setAuditLoading(null);
+    }
+  };
+
+  const handleRunGeoAudit = async () => {
+    setAuditLoading("geo");
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/articles/${brandId}/${articleId}/audits/geo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ organizationId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setGeoAudit(data.audit);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setAuditLoading(null);
+    }
+  };
+
+  const handleRunBrandAudit = async () => {
+    setAuditLoading("brand");
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/articles/${brandId}/${articleId}/audits/brand`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ organizationId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setBrandAudit(data.audit);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setAuditLoading(null);
+    }
+  };
+
+  const handleApproveVersion = async (vId: string) => {
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`/api/articles/${brandId}/${articleId}/versions/${vId}/approve-version`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Approval failed");
+      setApprovedVersionId(vId);
+      setStatusMessage(`Version approved (bound to v${vId.slice(0, 8)})`);
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   // ---- Left tabs ----
   const leftTabs: Array<{ id: LeftPanel; label: string; icon: typeof FileText }> = [
     { id: "outline", label: "Outline", icon: FileText },
@@ -802,7 +979,13 @@ export function ArticleEditorView({
                     <p className="text-[11px] text-neutral-400 px-1">No versions yet.</p>
                   ) : (
                     versions.map((v) => (
-                      <VersionRow key={v.id} version={v} onRestore={handleRestoreVersion} />
+                      <VersionRow
+                        key={v.id}
+                        version={v}
+                        onRestore={handleRestoreVersion}
+                        onApprove={handleApproveVersion}
+                        isApproved={approvedVersionId === v.id}
+                      />
                     ))
                   )}
                 </div>
@@ -885,19 +1068,108 @@ export function ArticleEditorView({
 
             <div className="flex-1 overflow-y-auto p-3">
               {rightPanel === "ai" && (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-neutral-700">AI Assistant</p>
-                  <p className="text-[11px] text-neutral-400">
-                    Select text or a block and use the AI regeneration API endpoint
-                    (<code className="bg-neutral-100 px-1 rounded">PUT /api/articles/:brandId/:articleId/blocks/:blockId</code>).
-                    Full OmniRouter integration is pending OR-P06.
-                  </p>
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs font-semibold text-neutral-800 flex items-center gap-1.5 mb-1">
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+                      Block Rewrite (OmniRouter)
+                    </p>
+                    <p className="text-[11px] text-neutral-400 mb-2">
+                      Select a block from the document and provide rewrite instructions.
+                    </p>
+                    <select
+                      value={selectedBlockId}
+                      onChange={(e) => setSelectedBlockId(e.target.value)}
+                      className="w-full text-xs border border-neutral-200 rounded px-2 py-1.5 mb-2 bg-white"
+                    >
+                      <option value="">-- Choose block to rewrite --</option>
+                      {editor.document.map((b) => {
+                        const ic = (b as unknown as { content?: Array<{ text?: string }> }).content ?? [];
+                        const preview = ic.map((x) => x.text ?? "").join("").slice(0, 30) || b.type;
+                        return (
+                          <option key={b.id} value={b.id}>
+                            [{b.type}] {preview}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <textarea
+                      value={aiInstruction}
+                      onChange={(e) => setAiInstruction(e.target.value)}
+                      placeholder="e.g., Make more punchy, clarify value proposition..."
+                      rows={2}
+                      className="w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-indigo-400 resize-none mb-2"
+                    />
+                    <button
+                      onClick={handleRewriteBlock}
+                      disabled={aiLoading || !selectedBlockId || !aiInstruction}
+                      className="w-full text-xs bg-indigo-600 text-white rounded px-2 py-1.5 hover:bg-indigo-700 disabled:opacity-50 cursor-pointer font-medium"
+                    >
+                      {aiLoading ? "Rewriting with OmniRouter..." : "Rewrite Block"}
+                    </button>
+                  </div>
+
+                  <div className="border-t border-neutral-100 pt-3">
+                    <p className="text-xs font-semibold text-neutral-800 mb-1">Generate Draft from Brief</p>
+                    <p className="text-[11px] text-neutral-400 mb-2">
+                      Load an approved Content Brief to generate all structured article blocks.
+                    </p>
+                    <input
+                      type="text"
+                      value={briefIdInput}
+                      onChange={(e) => setBriefIdInput(e.target.value)}
+                      placeholder="Brief UUID..."
+                      className="w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-indigo-400 mb-2"
+                    />
+                    <button
+                      onClick={handleGenerateFromBrief}
+                      disabled={aiLoading || !briefIdInput}
+                      className="w-full text-xs bg-neutral-900 text-white rounded px-2 py-1.5 hover:bg-neutral-800 disabled:opacity-50 cursor-pointer font-medium"
+                    >
+                      {aiLoading ? "Generating..." : "Generate Full Draft"}
+                    </button>
+                  </div>
                 </div>
               )}
 
               {rightPanel === "seo" && (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-neutral-700">SEO</p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-neutral-800">SEO</p>
+                    <button
+                      onClick={handleRunSeoAudit}
+                      disabled={auditLoading === "seo"}
+                      className="text-[11px] px-2 py-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded font-medium cursor-pointer"
+                    >
+                      {auditLoading === "seo" ? "Auditing..." : "Run SEO Audit"}
+                    </button>
+                  </div>
+
+                  {seoAudit && (
+                    <div className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-neutral-700">SEO Score</span>
+                        <span className={cn(
+                          "text-xs font-bold px-1.5 py-0.5 rounded",
+                          seoAudit.score >= 80 ? "bg-emerald-100 text-emerald-800" :
+                          seoAudit.score >= 50 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"
+                        )}>
+                          {seoAudit.score}/100
+                        </span>
+                      </div>
+                      {seoAudit.issues?.length > 0 && (
+                        <div className="text-[11px] text-amber-700 space-y-1 pt-1">
+                          {seoAudit.issues.map((iss: any, i: number) => (
+                            <div key={i} className="flex items-start gap-1">
+                              <span>•</span>
+                              <span>{iss.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <label className="block">
                     <span className="text-[10px] text-neutral-500">Meta title</span>
                     <input
@@ -929,8 +1201,43 @@ export function ArticleEditorView({
               )}
 
               {rightPanel === "geo" && (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-neutral-700">GEO</p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-neutral-800">GEO</p>
+                    <button
+                      onClick={handleRunGeoAudit}
+                      disabled={auditLoading === "geo"}
+                      className="text-[11px] px-2 py-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded font-medium cursor-pointer"
+                    >
+                      {auditLoading === "geo" ? "Auditing..." : "Run GEO Audit"}
+                    </button>
+                  </div>
+
+                  {geoAudit && (
+                    <div className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-neutral-700">GEO Score</span>
+                        <span className={cn(
+                          "text-xs font-bold px-1.5 py-0.5 rounded",
+                          geoAudit.score >= 80 ? "bg-emerald-100 text-emerald-800" :
+                          geoAudit.score >= 50 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"
+                        )}>
+                          {geoAudit.score}/100
+                        </span>
+                      </div>
+                      {geoAudit.recommendations?.length > 0 && (
+                        <div className="text-[11px] text-indigo-700 space-y-1 pt-1">
+                          {geoAudit.recommendations.map((rec: string, i: number) => (
+                            <div key={i} className="flex items-start gap-1">
+                              <span>•</span>
+                              <span>{rec}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <label className="block">
                     <span className="text-[10px] text-neutral-500">Geographic focus</span>
                     <input
@@ -954,10 +1261,61 @@ export function ArticleEditorView({
               )}
 
               {rightPanel === "brand" && (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-neutral-700">Brand</p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-neutral-800">Brand Compliance</p>
+                    <button
+                      onClick={handleRunBrandAudit}
+                      disabled={auditLoading === "brand"}
+                      className="text-[11px] px-2 py-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded font-medium cursor-pointer"
+                    >
+                      {auditLoading === "brand" ? "Auditing..." : "Run Brand Audit"}
+                    </button>
+                  </div>
+
+                  {brandAudit && (
+                    <div className="space-y-2">
+                      <div className="p-2.5 rounded-lg bg-neutral-50 border border-neutral-200 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-neutral-700">Brand Score</span>
+                          <span className={cn(
+                            "text-xs font-bold px-1.5 py-0.5 rounded",
+                            brandAudit.score >= 80 ? "bg-emerald-100 text-emerald-800" :
+                            brandAudit.score >= 50 ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"
+                          )}>
+                            {brandAudit.score}/100
+                          </span>
+                        </div>
+                      </div>
+
+                      {brandAudit.blockingPolicyViolations?.length > 0 && (
+                        <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 space-y-1">
+                          <p className="text-[11px] font-bold text-red-700 uppercase tracking-wide">
+                            Approval Blocked: Policy Violations
+                          </p>
+                          {brandAudit.blockingPolicyViolations.map((v: any, i: number) => (
+                            <p key={i} className="text-[11px] text-red-600">
+                              • {v.policy}: {v.description}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+
+                      {brandAudit.issues?.length > 0 && (
+                        <div className="text-[11px] text-amber-700 space-y-1">
+                          {brandAudit.issues.map((iss: any, i: number) => (
+                            <div key={i} className="flex items-start gap-1">
+                              <span>•</span>
+                              <span>{iss.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <p className="text-[11px] text-neutral-400">
-                    Brand voice, terminology, and policies enforced in AI review (OR-P06).
+                    Active brand policies and terminology are checked. Blocking policy violations prevent version approval.
                   </p>
                 </div>
               )}

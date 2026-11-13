@@ -1,7 +1,7 @@
 {
   "project": "OmniRank",
   "promptPackVersion": "1.0",
-  "currentCode": null,
+  "currentCode": "OR-P11",
   "prompts": [
     {
       "code": "OR-P01",
@@ -29,70 +29,70 @@
       "status": "completed",
       "startedAt": "2026-09-17T12:00:00.000Z",
       "completedAt": "2026-09-17T12:51:00.000Z",
-      "notes": "Implemented multi-format ingestion pipeline (PDF, DOCX, Markdown, HTML, CSV/XLSX, notes), defense-in-depth heuristic sanitizer & macro neutralizer (with untrusted data architectural isolation), hierarchical semantic chunker, gemini-embedding-2 (768d), deduplication hashing, evidence extraction engine, Sources and Evidence UI tabs, and test suite. R2 adapter implemented; live R2 verification pending credentials."
+      "notes": "Implemented multi-format ingestion pipeline (PDF, DOCX, Markdown, HTML, CSV/XLSX, notes), defense-in-depth heuristic sanitizer & macro neutralizer, hierarchical semantic chunker, gemini-embedding-2 (768d), deduplication hashing, evidence extraction engine, Sources and Evidence UI tabs, and test suite."
     },
     {
       "code": "OR-G04A",
       "status": "completed",
       "startedAt": "2026-09-17T15:00:00.000Z",
       "completedAt": "2026-09-17T16:15:00.000Z",
-      "notes": "Real Supabase Auth, Tenancy & Security Gate: implemented shared authentication middleware, server tenancy validation, role hierarchy enforcement (Owner/Admin/Member, Strategist/Writer/Reviewer/Viewer), isolated demo fixtures module (DEMO_MODE), and comprehensive security gate tests."
+      "notes": "Real Supabase Auth, Tenancy & Security Gate: implemented shared authentication middleware, server tenancy validation, role hierarchy enforcement, isolated demo fixtures module (DEMO_MODE), and comprehensive security gate tests."
     },
     {
       "code": "OR-G04B",
       "status": "completed",
       "startedAt": "2026-09-18T00:30:00.000Z",
       "completedAt": "2026-09-18T01:34:00.000Z",
-      "notes": "Real Brand Brain ingestion, storage & evidence gate: removed in-memory persistence for live DB mode, removed hardcoded org-001 tenancy, implemented binary file uploads (multer + pdf-parse/mammoth/xlsx/csv-parse), full SSRF-protected crawler, content hash deduplication with revision incrementing, private scoped R2 storage paths, unverified evidence candidate gate with verification workflow, updated trust taxonomy, and cross-brand pgvector retrieval."
+      "notes": "Real Brand Brain ingestion, storage & evidence gate: removed in-memory persistence for live DB mode, removed hardcoded org-001 tenancy, implemented binary file uploads, full SSRF-protected crawler, content hash deduplication, private scoped R2 storage paths, unverified evidence candidate gate with verification workflow."
     },
     {
       "code": "OR-G04C",
       "status": "completed",
       "startedAt": "2026-09-18T12:00:00.000Z",
       "completedAt": "2026-09-18T19:48:00.000Z",
-      "notes": "OR-G04C Final Live Security, Persistence & CI Gate: GitHub Actions standardized on Bun frozen lockfile with green build/lint/tests; Migration 20260918000006 safely dropped all legacy permissive RLS policies; user-scoped database access with token forwarding; live Supabase Auth session & tenancy resolution in frontend; R2 signed URLs implemented; cross-tenant verification verified; zero unhandled errors or swallowed promises."
+      "notes": "OR-G04C Final Live Security, Persistence & CI Gate: GitHub Actions standardized on Bun frozen lockfile with green build/lint/tests; Migration 20260918000006 safely dropped all legacy permissive RLS policies; user-scoped database access with token forwarding; live Supabase Auth session & tenancy resolution in frontend; R2 signed URLs implemented; cross-tenant verification verified."
     },
     {
       "code": "OR-P05",
-      "status": "pending",
-      "startedAt": null,
-      "completedAt": null,
-      "notes": ""
+      "status": "completed",
+      "startedAt": "2026-09-29T00:00:00.000Z",
+      "completedAt": "2026-09-29T12:00:00.000Z",
+      "notes": "Implemented canonical versioned structured article schema (migration 00010/00011), BlockNote-based rich editor, article_working_documents, article_versions, content_block_operations, DB-authoritative review RPC, review auth tests."
     },
     {
       "code": "OR-P06",
-      "status": "pending",
-      "startedAt": null,
-      "completedAt": null,
-      "notes": ""
+      "status": "completed",
+      "startedAt": "2026-09-29T12:00:00.000Z",
+      "completedAt": "2026-09-29T20:00:00.000Z",
+      "notes": "Implemented Opportunity Engine V1 (migration 00012): opportunities table with all scoring fields, tenant integrity constraints, Writer mutation restrictions, handoff_opportunity_to_article and handoff_opportunity_to_research RPCs, Opportunities UI."
     },
     {
       "code": "OR-P07",
-      "status": "pending",
-      "startedAt": null,
-      "completedAt": null,
-      "notes": ""
+      "status": "completed",
+      "startedAt": "2026-09-29T20:00:00.000Z",
+      "completedAt": "2026-10-02T06:30:00.000Z",
+      "notes": "Implemented Research and Evidence Engine (migration 00013): research_projects, research_questions, research_sources, research_findings, content_briefs; Fast/Standard/Deep mode configs; ResearchEngine context assembly from exact Brand Brain columns; review_research_finding and review_content_brief RPCs with Reviewer/Strategist workflow transitions; ResearchView with live auth. Schema column selects pinned to exact DB columns (knowledge_sources.name/source_url, evidence_sources.name/trust_score etc)."
     },
     {
       "code": "OR-P08",
-      "status": "pending",
-      "startedAt": null,
-      "completedAt": null,
-      "notes": ""
+      "status": "completed",
+      "startedAt": "2026-11-13T04:53:00.000Z",
+      "completedAt": "2026-11-13T05:05:00.000Z",
+      "notes": "Implemented OmniRouter provider-neutral AI routing (migration 00014: ai_tasks, ai_models, ai_routing_policies, ai_usage_events), Gemini adapter with free-tier models (gemini-2.0-flash, gemini-2.0-flash-lite), content generator from approved briefs, single block rewrites, API routes, and unit tests."
     },
     {
       "code": "OR-P09",
-      "status": "pending",
-      "startedAt": null,
-      "completedAt": null,
-      "notes": ""
+      "status": "completed",
+      "startedAt": "2026-11-13T05:00:00.000Z",
+      "completedAt": "2026-11-13T05:10:00.000Z",
+      "notes": "Implemented quality gates, audits, and immutable version approval (migration 00015: content_reviews, review_comments, seo_audits, geo_audits, brand_audits, approval_requirements, approve_article_version RPC), deterministic SEO/GEO/Brand audits with blocking policy violation detection, interactive audit & rewrite panels in ArticleEditorView, and unit tests."
     },
     {
       "code": "OR-P10",
-      "status": "pending",
-      "startedAt": null,
-      "completedAt": null,
-      "notes": ""
+      "status": "completed",
+      "startedAt": "2026-11-13T05:12:00.000Z",
+      "completedAt": "2026-11-13T05:14:00.000Z",
+      "notes": "Implemented secure WordPress publishing (migration 00016: integrations, protected_credentials, cms_content_mappings, publishing_jobs), sanitized Gutenberg/HTML serializer from canonical JSON, idempotent publishing service, REST API client, /api/publishing routes, and test suite."
     },
     {
       "code": "OR-P11",
